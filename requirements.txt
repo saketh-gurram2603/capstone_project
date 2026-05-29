@@ -1,0 +1,61 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# ── Validation ────────────────────────────────────────────────────────────────
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# ── Config / Secrets ──────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── OpenAI ────────────────────────────────────────────────────────────────────
+openai==1.59.4
+
+# ── Vector DB ─────────────────────────────────────────────────────────────────
+qdrant-client==1.13.0
+
+# ── Embeddings & Local Models ─────────────────────────────────────────────────
+sentence-transformers==3.3.1
+transformers==4.47.1
+torch==2.5.1
+
+# ── BM25 ──────────────────────────────────────────────────────────────────────
+rank-bm25==0.2.2
+
+# ── Cross-encoder reranker ────────────────────────────────────────────────────
+# sentence-transformers includes CrossEncoder
+
+# ── Agents ────────────────────────────────────────────────────────────────────
+langgraph==0.2.60
+langchain-core==0.3.29
+langchain-openai==0.3.0
+tavily-python==0.5.0
+
+# ── Cache (Redis — stub only, not active) ─────────────────────────────────────
+redis[asyncio]==5.2.1
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.36
+aiosqlite==0.20.0          # SQLite async driver (default, zero-install)
+asyncpg==0.30.0            # Postgres async driver (optional — only if POSTGRES_USER is set)
+
+# ── Resilience ────────────────────────────────────────────────────────────────
+pybreaker==1.2.0
+tenacity==9.0.0
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+deepeval==2.1.7
+
+# ── Data processing ───────────────────────────────────────────────────────────
+pandas==2.2.3
+numpy==1.26.4
+openpyxl==3.1.5
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.28.1
+locust==2.32.4

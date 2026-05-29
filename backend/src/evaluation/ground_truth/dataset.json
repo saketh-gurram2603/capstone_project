@@ -1,0 +1,362 @@
+[
+  {
+    "id": "GT-001",
+    "query": "Storage exceeded threshold causing upload failures",
+    "category": "Storage",
+    "relevant_incident_ids": [
+      "INC-5029",
+      "INC-5001",
+      "INC-5008",
+      "INC-5015"
+    ],
+    "expected_answer": "Archive old media files and expand storage volume"
+  },
+  {
+    "id": "GT-002",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5007",
+      "INC-5014",
+      "INC-5021",
+      "INC-5028"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-003",
+    "query": "Storage exceeded threshold causing upload failures",
+    "category": "Storage",
+    "relevant_incident_ids": [
+      "INC-5071",
+      "INC-5001",
+      "INC-5008",
+      "INC-5015"
+    ],
+    "expected_answer": "Archive old media files and expand storage volume"
+  },
+  {
+    "id": "GT-004",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5063",
+      "INC-5007",
+      "INC-5014",
+      "INC-5021"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-005",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5058",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-006",
+    "query": "Storage exceeded threshold causing upload failures",
+    "category": "Storage",
+    "relevant_incident_ids": [
+      "INC-5036",
+      "INC-5001",
+      "INC-5008",
+      "INC-5015"
+    ],
+    "expected_answer": "Archive old media files and expand storage volume"
+  },
+  {
+    "id": "GT-007",
+    "query": "Queries timing out during peak usage",
+    "category": "Hardware",
+    "relevant_incident_ids": [
+      "INC-5027",
+      "INC-5006",
+      "INC-5013",
+      "INC-5020"
+    ],
+    "expected_answer": "Add indexes and optimize query performance"
+  },
+  {
+    "id": "GT-008",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5140",
+      "INC-5007",
+      "INC-5014",
+      "INC-5021"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-009",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5023",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-010",
+    "query": "Multiple failed login attempts detected",
+    "category": "Performance",
+    "relevant_incident_ids": [
+      "INC-5109",
+      "INC-5004",
+      "INC-5011",
+      "INC-5018"
+    ],
+    "expected_answer": "Block IP and enforce multi-factor authentication"
+  },
+  {
+    "id": "GT-011",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5009",
+      "INC-5002",
+      "INC-5016",
+      "INC-5023"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-012",
+    "query": "Storage exceeded threshold causing upload failures",
+    "category": "Storage",
+    "relevant_incident_ids": [
+      "INC-5008",
+      "INC-5001",
+      "INC-5015",
+      "INC-5022"
+    ],
+    "expected_answer": "Archive old media files and expand storage volume"
+  },
+  {
+    "id": "GT-013",
+    "query": "Encoder crashed during media conversion",
+    "category": "Security",
+    "relevant_incident_ids": [
+      "INC-5024",
+      "INC-5003",
+      "INC-5010",
+      "INC-5017"
+    ],
+    "expected_answer": "Restart encoder service and update codec library"
+  },
+  {
+    "id": "GT-014",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5056",
+      "INC-5007",
+      "INC-5014",
+      "INC-5021"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-015",
+    "query": "Multiple failed login attempts detected",
+    "category": "Performance",
+    "relevant_incident_ids": [
+      "INC-5060",
+      "INC-5004",
+      "INC-5011",
+      "INC-5018"
+    ],
+    "expected_answer": "Block IP and enforce multi-factor authentication"
+  },
+  {
+    "id": "GT-016",
+    "query": "Multiple failed login attempts detected",
+    "category": "Performance",
+    "relevant_incident_ids": [
+      "INC-5130",
+      "INC-5004",
+      "INC-5011",
+      "INC-5018"
+    ],
+    "expected_answer": "Block IP and enforce multi-factor authentication"
+  },
+  {
+    "id": "GT-017",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5149",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-018",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5051",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-019",
+    "query": "Encoder crashed during media conversion",
+    "category": "Security",
+    "relevant_incident_ids": [
+      "INC-5108",
+      "INC-5003",
+      "INC-5010",
+      "INC-5017"
+    ],
+    "expected_answer": "Restart encoder service and update codec library"
+  },
+  {
+    "id": "GT-020",
+    "query": "Storage exceeded threshold causing upload failures",
+    "category": "Storage",
+    "relevant_incident_ids": [
+      "INC-5057",
+      "INC-5001",
+      "INC-5008",
+      "INC-5015"
+    ],
+    "expected_answer": "Archive old media files and expand storage volume"
+  },
+  {
+    "id": "GT-021",
+    "query": "Encoder crashed during media conversion",
+    "category": "Security",
+    "relevant_incident_ids": [
+      "INC-5115",
+      "INC-5003",
+      "INC-5010",
+      "INC-5017"
+    ],
+    "expected_answer": "Restart encoder service and update codec library"
+  },
+  {
+    "id": "GT-022",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5072",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-023",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5002",
+      "INC-5009",
+      "INC-5016",
+      "INC-5023"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-024",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5098",
+      "INC-5007",
+      "INC-5014",
+      "INC-5021"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-025",
+    "query": "Queries timing out during peak usage",
+    "category": "Hardware",
+    "relevant_incident_ids": [
+      "INC-5104",
+      "INC-5006",
+      "INC-5013",
+      "INC-5020"
+    ],
+    "expected_answer": "Add indexes and optimize query performance"
+  },
+  {
+    "id": "GT-026",
+    "query": "Video stream stopped responding for live broadcast",
+    "category": "Network",
+    "relevant_incident_ids": [
+      "INC-5021",
+      "INC-5007",
+      "INC-5014",
+      "INC-5028"
+    ],
+    "expected_answer": "Restart streaming service and reset network interface"
+  },
+  {
+    "id": "GT-027",
+    "query": "Queries timing out during peak usage",
+    "category": "Hardware",
+    "relevant_incident_ids": [
+      "INC-5090",
+      "INC-5006",
+      "INC-5013",
+      "INC-5020"
+    ],
+    "expected_answer": "Add indexes and optimize query performance"
+  },
+  {
+    "id": "GT-028",
+    "query": "Queries timing out during peak usage",
+    "category": "Hardware",
+    "relevant_incident_ids": [
+      "INC-5055",
+      "INC-5006",
+      "INC-5013",
+      "INC-5020"
+    ],
+    "expected_answer": "Add indexes and optimize query performance"
+  },
+  {
+    "id": "GT-029",
+    "query": "Media loading slowly due to cache miss",
+    "category": "Application",
+    "relevant_incident_ids": [
+      "INC-5044",
+      "INC-5002",
+      "INC-5009",
+      "INC-5016"
+    ],
+    "expected_answer": "Refresh CDN cache and optimize media compression"
+  },
+  {
+    "id": "GT-030",
+    "query": "Processing service consuming excessive CPU",
+    "category": "Database",
+    "relevant_incident_ids": [
+      "INC-5145",
+      "INC-5005",
+      "INC-5012",
+      "INC-5019"
+    ],
+    "expected_answer": "Optimize processing parameters and restart service"
+  }
+]

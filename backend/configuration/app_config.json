@@ -1,0 +1,74 @@
+{
+  "APP_NAME": "Incident-Knowledge-Base-Assistant",
+  "APP_VERSION": "1.0.0",
+  "API_PREFIX": "/it-kb",
+  "DESCRIPTION": "AI-Powered Incident Knowledge Base Assistant with hybrid search, multi-tier agents, and LLM-as-Judge evaluation",
+
+  "RETRIEVAL": {
+    "K_MIN": 3,
+    "K_DEFAULT": 10,
+    "K_MAX": 20,
+    "RRF_K": 60,
+    "SCORE_DROPOFF_THRESHOLD": 0.15,
+    "RESOLUTION_DEDUP_THRESHOLD": 0.95,
+    "L1_CONFIDENCE_THRESHOLD": 0.80,
+    "L2_CONFIDENCE_THRESHOLD": 0.55,
+    "TAVILY_MAX_RESULTS": 5,
+    "TOP_K_FINAL": 10
+  },
+
+  "INGESTION": {
+    "BATCH_SIZE": 50,
+    "MAX_FILE_SIZE_MB": 50,
+    "SUPPORTED_FORMATS": ["xlsx", "xls"]
+  },
+
+  "CACHE": {
+    "EMBEDDING_TTL_SECONDS": 86400,
+    "QUERY_RESULT_TTL_SECONDS": 3600,
+    "MAX_CONNECTIONS": 20
+  },
+
+  "DATABASE": {
+    "POOL_SIZE": 20,
+    "MAX_OVERFLOW": 10,
+    "POOL_RECYCLE_SECONDS": 3600
+  },
+
+  "LLM": {
+    "L1_MODEL": "gpt-4o-mini",
+    "L2_MODEL": "gpt-4o",
+    "FALLBACK_MODEL": "google/flan-t5-base",
+    "EMBEDDING_MODEL": "text-embedding-ada-002",
+    "EMBEDDING_FALLBACK_MODEL": "all-MiniLM-L6-v2",
+    "RERANKER_MODEL": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "REQUEST_TIMEOUT_SECONDS": 30,
+    "MAX_RETRIES": 3,
+    "RETRY_BASE_DELAY_SECONDS": 2
+  },
+
+  "CIRCUIT_BREAKER": {
+    "FAIL_MAX": 5,
+    "RESET_TIMEOUT_SECONDS": 60
+  },
+
+  "LOGGING": {
+    "MAX_BYTES": 5242880,
+    "BACKUP_COUNT": 5,
+    "LOG_DIR": "logs"
+  },
+
+  "EVALUATION": {
+    "GROUND_TRUTH_SIZE": 50,
+    "FAITHFULNESS_THRESHOLD": 0.70,
+    "RELEVANCY_THRESHOLD": 0.75,
+    "CONTEXTUAL_PRECISION_THRESHOLD": 0.65,
+    "NDCG_K": 10
+  },
+
+  "QDRANT": {
+    "COLLECTION_NAME": "incidents",
+    "VECTOR_SIZE": 1536,
+    "DISTANCE": "Cosine"
+  }
+}

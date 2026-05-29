@@ -1,0 +1,32 @@
+{
+  "development": {
+    "env_file": "./env/development.env",
+    "qdrant_url": "https://2ac52cb2-ba2f-4266-8caa-51d13cd0d78e.us-west-2-0.aws.cloud.qdrant.io:6333",
+    "redis_url": "redis://localhost:6379",
+    "postgres_host": "localhost",
+    "postgres_port": 5432,
+    "postgres_db": "incident_kb",
+    "debug": true,
+    "log_level": "DEBUG"
+  },
+  "docker": {
+    "env_file": "./env/development.env",
+    "qdrant_url": "http://qdrant:6333",
+    "redis_url": "redis://redis:6379",
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "postgres_db": "incident_kb",
+    "debug": false,
+    "log_level": "INFO"
+  },
+  "production": {
+    "env_file": "./env/production.env",
+    "qdrant_url": "http://qdrant:6333",
+    "redis_url": "redis://redis:6379",
+    "postgres_host": "postgres",
+    "postgres_port": 5432,
+    "postgres_db": "incident_kb",
+    "debug": false,
+    "log_level": "WARNING"
+  }
+}

@@ -1,0 +1,60 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Secrets & environment files ───────────────────────────────────────────────
+*.env
+!.env.example
+backend/env/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+backend/logs/
+*.log
+
+# ── BM25 index (built at runtime) ─────────────────────────────────────────────
+data/bm25_index.pkl
+backend/data/bm25_index.pkl
+**/bm25_index.pkl
+
+# ── pytest / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Claude internal ───────────────────────────────────────────────────────────
+.claude/
+
+# ── HuggingFace model cache (too large) ───────────────────────────────────────
+*.bin
+*.safetensors
