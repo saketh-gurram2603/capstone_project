@@ -1,16 +1,19 @@
 """
-LLM-as-Judge evaluation using DeepEval.
+LLM-as-Judge evaluation using DeepEval — Azure OpenAI backend.
 
 Metrics computed:
   - Faithfulness          — does the answer stay grounded in the retrieved context?
   - Answer Relevancy      — does the answer address the question?
   - Contextual Precision  — are the retrieved docs actually relevant to the question?
 
-All three metrics call OpenAI under the hood.  Results are returned as plain
-dicts so the runner can serialise them to Postgres without a DeepEval dependency
-in other modules.
+DeepEval is configured to call our Azure deployment via _AzureJudgeModel, a thin
+DeepEvalBaseLLM subclass that wraps the synchronous AzureOpenAI client.
+Call init_llm_judge() once at startup before running evaluations.
 
-If DeepEval or OpenAI is unavailable, each metric returns score=0.0 with
+Results are returned as plain dicts so the runner can serialise them to Postgres
+without a DeepEval dependency in other modules.
+
+If DeepEval or Azure is unavailable, each metric returns score=0.0 with
 reason="unavailable" so the eval pipeline degrades gracefully.
 """
 
@@ -21,9 +24,77 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from src.handlers.logger import get_logger, log_info, log_warning
+
+# ── Azure judge model state ───────────────────────────────────────────────────
+# Populated by init_llm_judge() at startup.  The judge uses a *synchronous*
+# AzureOpenAI client because DeepEval metrics run synchronously inside
+# _run_all_deepeval_sync (which is already in a thread executor).
+_azure_judge_client = None   # openai.AzureOpenAI — set at startup
+_azure_judge_deployment: str = "synapt-dev-gpt-4o-mini"
+
+
+def init_llm_judge(
+    azure_api_key: str,
+    azure_endpoint: str,
+    azure_api_version: str,
+    deployment: str = "synapt-dev-gpt-4o-mini",
+) -> None:
+    """
+    Initialise the synchronous Azure OpenAI client used by DeepEval metrics.
+    Call once from the FastAPI lifespan before any evaluation runs.
+    """
+    global _azure_judge_client, _azure_judge_deployment
+    try:
+        from openai import AzureOpenAI  # sync client — correct for DeepEval's sync path
+        _azure_judge_client = AzureOpenAI(
+            api_key=azure_api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=azure_api_version,
+        )
+        _azure_judge_deployment = deployment
+        log_info(
+            "Azure OpenAI judge client initialised | endpoint=%s deployment=%s",
+            azure_endpoint, deployment,
+        )
+    except Exception as exc:
+        log_warning("LLM judge init failed — evaluation will be unavailable | error=%s", exc)
+
+
+class _AzureJudgeModel:
+    """
+    Thin DeepEvalBaseLLM subclass that routes metric calls to our Azure
+    deployment instead of the default OpenAI endpoint.
+
+    DeepEval calls generate() synchronously when running inside a thread
+    (our run_in_executor pattern), so we only need the sync path.
+    """
+
+    def __init__(self, client: Any, deployment: str) -> None:
+        self._client = client
+        self._deployment = deployment
+
+    # Required by DeepEvalBaseLLM -------------------------------------------------
+
+    def load_model(self) -> Any:
+        return self._client
+
+    def generate(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+        response = self._client.chat.completions.create(
+            model=self._deployment,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        return response.choices[0].message.content
+
+    async def a_generate(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+        # DeepEval may call this if it detects an async context; delegate to sync.
+        return self.generate(prompt)
+
+    def get_model_name(self) -> str:
+        return self._deployment
 
 logger = get_logger("evaluation.llm_judge")
 
@@ -74,10 +145,8 @@ def _run_all_deepeval_sync(
     Run ALL DeepEval operations — lazy imports, metric initialisation, and
     measure() — inside a guaranteed-writable scratch directory.
 
-    This is the critical change vs. the previous implementation: metric
-    __init__() calls also write `.deepeval` to CWD, so they must be covered
-    by the same chdir context as measure().  Running everything in one locked
-    block eliminates every EACCES write.
+    Metrics are configured with _AzureJudgeModel so every evaluation call
+    goes through our Azure deployment instead of the default OpenAI endpoint.
 
     Called via asyncio.run_in_executor so it executes on a thread-pool
     thread.  Returns (faith_metric, relevancy_metric, precision_metric).
@@ -94,7 +163,23 @@ def _run_all_deepeval_sync(
                 ContextualPrecisionMetric,
                 FaithfulnessMetric,
             )
+            from deepeval.models.base_model import DeepEvalBaseLLM  # noqa: PLC0415
             from deepeval.test_case import LLMTestCase  # noqa: PLC0415
+
+            # Build an Azure-backed judge model so DeepEval never calls the
+            # raw OpenAI endpoint directly.  Falls back to the string name
+            # "gpt-4o-mini" only when the Azure client was not initialised
+            # (e.g. missing key at startup) — metrics will then error and be
+            # caught by the outer try/except, returning score=0.0.
+            if _azure_judge_client is not None:
+                # Dynamically subclass DeepEvalBaseLLM so DeepEval accepts it
+                # as a model argument (it checks isinstance at metric init).
+                class _AzureModel(_AzureJudgeModel, DeepEvalBaseLLM):
+                    pass
+                judge_model: Any = _AzureModel(_azure_judge_client, _azure_judge_deployment)
+            else:
+                log_warning("Azure judge client not initialised — falling back to model name string")
+                judge_model = _azure_judge_deployment   # type: ignore[assignment]
 
             test_case = LLMTestCase(
                 input=query,
@@ -106,17 +191,17 @@ def _run_all_deepeval_sync(
             # Metric __init__ writes .deepeval → must be inside the workdir.
             faith_metric = FaithfulnessMetric(
                 threshold=faithfulness_threshold,
-                model="gpt-4o-mini",
+                model=judge_model,
                 include_reason=True,
             )
             relevancy_metric = AnswerRelevancyMetric(
                 threshold=relevancy_threshold,
-                model="gpt-4o-mini",
+                model=judge_model,
                 include_reason=True,
             )
             precision_metric = ContextualPrecisionMetric(
                 threshold=contextual_precision_threshold,
-                model="gpt-4o-mini",
+                model=judge_model,
                 include_reason=True,
             )
 
@@ -129,10 +214,6 @@ def _run_all_deepeval_sync(
 
         finally:
             os.chdir(previous)
-
-
-def _get_openai_key() -> str:
-    return os.getenv("OPENAI_API_KEY", "")
 
 
 # ── Core evaluation function ──────────────────────────────────────────────────
@@ -148,7 +229,7 @@ async def evaluate_with_llm_judge(
     contextual_precision_threshold: float = 0.65,
 ) -> dict:
     """
-    Run DeepEval LLM-as-Judge metrics for a single test case.
+    Run DeepEval LLM-as-Judge metrics for a single test case via Azure OpenAI.
 
     Returns a dict:
     {
@@ -157,16 +238,8 @@ async def evaluate_with_llm_judge(
         "contextual_precision": {"score": float, "reason": str, "passed": bool},
     }
     """
-    api_key = _get_openai_key()
-    if not api_key:
-        log_warning("OPENAI_API_KEY not set — skipping LLM judge")
-        return _unavailable_result()
-
-    # Quick import-availability check (does not trigger file writes).
-    try:
-        import deepeval  # noqa: F401
-    except ImportError:
-        log_warning("deepeval not installed — skipping LLM judge")
+    if _azure_judge_client is None:
+        log_warning("Azure judge client not initialised — skipping LLM judge (call init_llm_judge at startup)")
         return _unavailable_result()
 
     try:

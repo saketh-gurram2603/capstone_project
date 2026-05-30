@@ -272,14 +272,6 @@ capstone_project/
 ├── requirements/
 │   └── project-requirements.md         ← Original project specification
 │
-├── docs/
-│   ├── architecture/                    ← Component + microservice diagrams
-│   └── data-flow/                       ← Ingestion, Retrieval, and Triage flow diagrams
-│
-├── k8s/
-│   ├── incident-kb-dev.yaml            ← K8s dev manifests
-│   └── incident-kb-prod.yaml           ← K8s production manifests
-│
 ├── backend/
 │   ├── main.py                          ← FastAPI entry point; lifespan startup + router registration
 │   ├── requirements.txt                 ← 61 pinned dependencies
@@ -406,10 +398,9 @@ capstone_project/
 │
 └── tests/
     ├── conftest.py
-    ├── unit/                            ← 15 files, 213 tests
-    ├── integration/                     ← 3 files, 34 tests
-    ├── evaluation/                      ← 1 file, 14 tests
-    └── load/                            ← Locust load test suite
+    ├── unit/                            ← Unit tests (retrieval, agents, models, config)
+    ├── integration/                     ← API endpoint tests (mocked externals)
+    └── evaluation/                      ← RAG quality threshold tests
 ```
 
 ---
@@ -762,7 +753,6 @@ Sessions expire after 30 minutes of inactivity. A `404` is returned for expired 
 | Unit | `tests/unit/` | 213 tests | All retrieval components, agents, models, config, logger, exceptions |
 | Integration | `tests/integration/` | 34 tests | All API endpoints with mocked external services |
 | Evaluation | `tests/evaluation/` | 14 tests | RAG quality thresholds (NDCG, faithfulness, relevancy) |
-| Load | `tests/load/` | — | Locust: 50 users, p99 < 500 ms target |
 
 ### Running Tests
 
@@ -775,15 +765,6 @@ pytest tests/unit tests/integration -v --cov=src --cov-report=term-missing
 
 # Evaluation tests (requires running backend + OpenAI key)
 pytest tests/evaluation -v
-
-# Load test (requires running backend)
-locust -f tests/load/locustfile.py \
-  --headless \
-  --users 50 \
-  --spawn-rate 5 \
-  --run-time 60s \
-  --host http://localhost:8000
-# Pass criteria: p99 < 500 ms, error rate < 1%
 ```
 
 ### Unit Test Files
@@ -902,9 +883,10 @@ Internet
 
 ### K8s Manifests
 
-Manifests are located in `k8s/`:
-- `incident-kb-dev.yaml` — development cluster (single replica, `requests.memory: 1Gi`)
-- `incident-kb-prod.yaml` — production cluster (HPA min=2 max=10, PodDisruptionBudget, resource limits)
+> **Not bundled in this POC.** The topology above is a design target. Kubernetes
+> manifests are intentionally not included in this repository — the system ships
+> and runs via Docker Compose (see Section 8). This section documents how it
+> *would* be deployed to a cluster in production.
 
 ### Resource Estimates (per FastAPI pod)
 
@@ -967,7 +949,7 @@ The following Prometheus metrics are the intended production extension:
 
 ## 15. Design Decisions
 
-Full trade-off analysis is documented in `DECISIONS.md`. Key decisions are summarised below.
+Key architectural decisions and their trade-offs are summarised below.
 
 ### ADR-001 — Qdrant as Vector Database
 
@@ -1123,9 +1105,8 @@ None of these are loaded on first request. A request arriving before startup is 
 [ ] POST /chat (session_id=null)  →  { session_id, message with numbered steps, option_progress }
 [ ] POST /chat (session_id=existing, "didn't work")  →  option_progress.current increments
 [ ] POST /chat (all options exhausted)  →  is_escalated=true, escalation_ticket_id set
-[ ] pytest tests/ -v --cov=src  →  213+ pass, coverage >= 75%
-[ ] locust --headless --users 50 --run-time 60s  →  p99 < 500ms, error rate < 1%
-[ ] React app http://localhost:5173  →  Search · Triage · Analytics · Ingest · Chat pages functional
+[ ] pytest tests/ -v --cov=src  →  tests pass, coverage >= 75%
+[ ] React app http://localhost:5173  →  Search · Triage · Analytics · Ingest · Chat · Admin pages functional
 [ ] /chat page  →  bubbles render, action buttons advance fix index, escalation shows ticket ID
 [ ] grep -r "print(" src/  →  zero matches (except main.py line 63 — deferred)
 [ ] grep -rE "(sk-|password\s*=)" src/  →  zero matches

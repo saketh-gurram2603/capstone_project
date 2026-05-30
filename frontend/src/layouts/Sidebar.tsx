@@ -1,10 +1,12 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useQuery } from '@tanstack/react-query'
 import {
-  Search, GitBranch, BarChart2, Shield,
+  Search, GitBranch, BarChart2, Shield, ShieldCheck,
   ChevronLeft, ChevronRight, Activity, Upload, MessageSquare,
 } from 'lucide-react'
 import { useUIStore } from '../store/uiStore'
+import { getFeedback } from '../api/feedbackApi'
 
 const NAV = [
   {
@@ -36,12 +38,26 @@ const NAV = [
     label: 'Chat Assistant',
     icon: MessageSquare
   },
+  {
+    to: '/admin',
+    label: 'Feedback Review',
+    icon: ShieldCheck,
+    badge: null,
+  },
 ]
 
 export default function Sidebar() {
   const collapsed = useUIStore(s => s.sidebarCollapsed)
   const toggle    = useUIStore(s => s.toggleSidebar)
   const { pathname } = useLocation()
+
+  // Live count of unreviewed feedback → red pill on the Feedback Review item
+  const { data: fb } = useQuery({
+    queryKey: ['feedback-pending'],
+    queryFn: () => getFeedback(),
+    refetchInterval: 5000,
+  })
+  const pendingFeedback = fb?.stats.pending ?? 0
 
   return (
     <motion.aside
@@ -105,6 +121,7 @@ export default function Sidebar() {
               <motion.div
                 whileHover={{ x: collapsed ? 0 : 2 }}
                 transition={{ duration: 0.1 }}
+                title={collapsed ? label : undefined}
                 className="flex items-center rounded-xl cursor-pointer relative"
                 style={{
                   gap: collapsed ? 0 : '0.75rem',
@@ -136,7 +153,11 @@ export default function Sidebar() {
                     transition={{ type: 'spring', stiffness: 400, damping: 30 }}
                   />
                 )}
-                <Icon className="w-4 h-4 flex-shrink-0" title={collapsed ? label : undefined} />
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                {collapsed && to === '/admin' && pendingFeedback > 0 && (
+                  <span className="absolute top-1.5 right-2 w-2 h-2 rounded-full"
+                        style={{ background: '#F05A5A', border: '1px solid var(--bg-secondary)' }} />
+                )}
                 <AnimatePresence>
                   {!collapsed && (
                     <motion.div
@@ -147,12 +168,18 @@ export default function Sidebar() {
                       className="flex-1 flex items-center justify-between overflow-hidden"
                     >
                       <span className="text-sm font-medium whitespace-nowrap">{label}</span>
-                      {badge && (
+                      {to === '/admin' && pendingFeedback > 0 ? (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"
+                              style={{ background: 'rgba(240,90,90,0.18)', color: '#F05A5A',
+                                       border: '1px solid rgba(240,90,90,0.3)' }}>
+                          {pendingFeedback}
+                        </span>
+                      ) : badge ? (
                         <span className="mono text-[10px] px-1.5 py-0.5 rounded-md"
                               style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-secondary)' }}>
                           {badge}
                         </span>
-                      )}
+                      ) : null}
                     </motion.div>
                   )}
                 </AnimatePresence>

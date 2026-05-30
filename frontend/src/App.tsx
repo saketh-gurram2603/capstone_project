@@ -6,6 +6,7 @@ import TriagePage from './pages/TriagePage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import IngestionPage from './pages/IngestionPage'
 import ChatPage from './pages/ChatPage'
+import AdminPage from './pages/AdminPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/ingest"    element={<IngestionPage />} />
             <Route path="/chat"      element={<ChatPage />} />
+            <Route path="/admin"     element={<AdminPage />} />
             <Route path="*"          element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

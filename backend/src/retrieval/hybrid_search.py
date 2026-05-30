@@ -252,6 +252,8 @@ def _build_incident_response(candidate: dict) -> dict:
         "incident_id":      payload.get("incident_id", str(candidate.get("id", ""))),
         "ticket_id":        payload.get("ticket_id") or None,
         "title":            payload.get("title") or None,
+        "priority":         payload.get("priority") or None,
+        "impact":           payload.get("impact") or None,
         "category":         payload.get("category") or None,
         "description":      payload.get("description", ""),
         "resolution_notes": payload.get("resolution_notes") or None,

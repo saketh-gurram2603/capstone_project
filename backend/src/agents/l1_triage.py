@@ -134,28 +134,37 @@ def make_l1_node(
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-# The reranker (reranker.py) min-max normalises similarity scores to [FLOOR, 1.0].
-# Using raw similarity_score as confidence means even completely irrelevant results
-# produce a minimum confidence of FLOOR, making the L1 gate unreliable.
-# We rescale to [0.0, 1.0] so a result at the floor maps to 0.0 confidence.
+# Fallback floor for the legacy similarity_score path (reranker not loaded).
 _RERANKER_SCORE_FLOOR = 0.30
 
 
 def _calculate_confidence(results: list[dict]) -> float:
     """
-    Weighted average of top-5 similarity scores, rescaled to [0, 1].
+    L1 confidence = best ABSOLUTE rerank confidence across the retrieved set.
 
-    Position 1 carries 5× weight, position 5 carries 1× weight.
-    The reranker normalises scores to [_RERANKER_SCORE_FLOOR, 1.0]; subtracting
-    the floor and dividing by the span maps the worst result in a batch to 0.0
-    (no confidence) and the best to 1.0, making the L1 threshold meaningful.
+    The reranker stores ``rerank_confidence`` = sigmoid(cross-encoder logit),
+    which is batch-independent: a genuinely relevant top incident scores ~0.97
+    and an irrelevant one ~0.0. We take the max over the candidates so a single
+    strong historical match lets L1 resolve, while a query with no relevant
+    match yields low confidence and correctly escalates to L2.
+
+    Falls back to the legacy rescaled similarity_score only when the reranker is
+    unavailable (no absolute confidence was attached).
     """
     if not results:
         return 0.0
+
+    abs_confidences = [
+        r["rerank_confidence"] for r in results
+        if r.get("rerank_confidence") is not None
+    ]
+    if abs_confidences:
+        return max(abs_confidences)
+
+    # ── Fallback: reranker not loaded → rescale min-max similarity_score ──────
     top = results[:5]
     floor = _RERANKER_SCORE_FLOOR
     span = 1.0 - floor
-    # Rescale: similarity_score in [floor, 1.0] → true_confidence in [0.0, 1.0]
     scores = [
         max(0.0, (r.get("similarity_score", 0.0) - floor) / span)
         for r in top

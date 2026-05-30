@@ -59,7 +59,10 @@ class ChatAgent:
         if session is None:
             raise KeyError(f"Session not found or expired: {request.session_id}")
 
-        return await self._handle_continuation(session, request.message, session_manager)
+        # Serialise concurrent turns on the same session to prevent the
+        # current_index read-modify-write from interleaving across LLM awaits.
+        async with session.lock:
+            return await self._handle_continuation(session, request.message, session_manager)
 
     # ── New session ───────────────────────────────────────────────────────────
 
@@ -125,6 +128,8 @@ class ChatAgent:
         log_info("Chat continuation | intent=%s session=%s", intent, session.session_id)
 
         if intent == "RESOLVED":
+            # Capture positive feedback on the fix the user just confirmed worked.
+            await self._safe_record_feedback(session, sentiment="positive", reason=message)
             reply = (
                 "Great — glad that resolved your incident! "
                 "If the issue returns, feel free to start a new session. "
@@ -143,7 +148,10 @@ class ChatAgent:
         if intent == "QUESTION":
             return await self._answer_question(session, message, session_manager)
 
-        # NEXT_OPTION — advance the index
+        # NEXT_OPTION — the current fix didn't work. Capture negative feedback
+        # (the user's message becomes the free-text reason), then advance.
+        await self._safe_record_feedback(session, sentiment="negative", reason=message)
+
         next_index = session.current_index + 1
         if next_index >= len(session.resolution_options):
             return await self._escalate(
@@ -199,6 +207,52 @@ class ChatAgent:
             return "QUESTION"
 
         return "NEXT_OPTION"
+
+    # ── Feedback capture ──────────────────────────────────────────────────────
+
+    def _current_fix_meta(self, session: ChatSession) -> dict | None:
+        """Metadata for the fix the user is currently reacting to (or None)."""
+        options = session.resolution_options
+        if not options or session.current_index >= len(options):
+            return None
+        option = options[session.current_index]
+        return {
+            "resolution_text": option.get("resolution_text", ""),
+            "incident_ids": option.get("source_incident_ids", []),
+            "occurrence_count": option.get("occurrence_count", 1),
+            "fix_index": session.current_index + 1,
+            "fix_total": len(options),
+        }
+
+    async def _safe_record_feedback(
+        self,
+        session: ChatSession,
+        sentiment: str,
+        reason: str,
+    ) -> None:
+        """
+        Persist feedback on the current fix for admin review.
+        Wrapped so a feedback-store failure never breaks the chat turn.
+        """
+        try:
+            from src.feedback.feedback_store import record_feedback
+
+            meta = self._current_fix_meta(session)
+            if not meta:
+                return
+            await record_feedback(
+                session_id=session.session_id,
+                query=session.incident_description,
+                sentiment=sentiment,
+                fix_index=meta["fix_index"],
+                fix_total=meta["fix_total"],
+                resolution_text=meta["resolution_text"],
+                incident_ids=meta["incident_ids"],
+                occurrence_count=meta["occurrence_count"],
+                reason=reason,
+            )
+        except Exception as exc:
+            log_warning("Chat: feedback capture failed | error=%s", exc)
 
     # ── Format a resolution option as numbered steps ──────────────────────────
 

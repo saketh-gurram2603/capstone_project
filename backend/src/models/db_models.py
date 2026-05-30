@@ -4,8 +4,9 @@ SQLAlchemy ORM models for Postgres persistence.
 Tables:
   - escalation_tickets  (L3 specialist output)
   - eval_runs           (evaluation pipeline results)
+  - feedback            (user feedback captured from the guided chat)
 
-Both tables are created via create_tables() in src.integrations.database.
+All tables are created via create_tables() in src.integrations.database.
 """
 
 from __future__ import annotations
@@ -69,4 +70,47 @@ class EvalRunDB(Base):
             "overall_passed": self.overall_passed,
             "num_test_cases": self.num_test_cases,
             "timestamp": self.timestamp,
+        }
+
+
+class FeedbackDB(Base):
+    """
+    User feedback on a suggested resolution, captured live from the guided
+    chat. Negative feedback ("the steps didn't work") and positive feedback
+    ("issue resolved") both land here for admin review.
+    """
+
+    __tablename__ = "feedback"
+
+    feedback_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    query: Mapped[str] = mapped_column(Text)
+    sentiment: Mapped[str] = mapped_column(String(10))            # positive | negative
+    fix_index: Mapped[int] = mapped_column(Integer, default=0)    # 1-based fix the user reacted to
+    fix_total: Mapped[int] = mapped_column(Integer, default=0)
+    resolution_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    incident_ids: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list[str]
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # free-text from the user
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")        # PENDING | VERIFIED | DISMISSED
+    admin_action: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "feedback_id": self.feedback_id,
+            "session_id": self.session_id,
+            "query": self.query,
+            "sentiment": self.sentiment,
+            "fix_index": self.fix_index,
+            "fix_total": self.fix_total,
+            "resolution_text": self.resolution_text,
+            "incident_ids": json.loads(self.incident_ids) if self.incident_ids else [],
+            "occurrence_count": self.occurrence_count,
+            "reason": self.reason,
+            "status": self.status,
+            "admin_action": self.admin_action,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
         }

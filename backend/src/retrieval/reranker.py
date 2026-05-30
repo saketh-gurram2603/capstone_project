@@ -92,9 +92,15 @@ def rerank(query: str, candidates: list[dict]) -> list[dict]:
     raw_scores = _cross_encoder.predict(pairs)
     raw_floats = [float(s) for s in raw_scores]
 
-    # Assign raw rerank scores
+    # Assign raw rerank scores + an ABSOLUTE confidence.
+    # rerank_confidence = sigmoid(raw_logit): batch-independent and calibrated by
+    # the cross-encoder itself. Empirically ms-marco-MiniLM gives ~+3.5 for a
+    # relevant (query, incident) pair (sigmoid≈0.97) and ~-11 for an irrelevant
+    # one (sigmoid≈0.0), so this is a reliable gate signal for L1 triage — unlike
+    # the batch min-max similarity_score below, which is for DISPLAY only.
     for candidate, raw in zip(candidates, raw_floats):
         candidate["rerank_score"] = raw
+        candidate["rerank_confidence"] = _sigmoid(raw)
 
     # Sort by raw logit descending — this is the actual rerank
     reranked = sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)
@@ -161,4 +167,8 @@ def _add_fallback_scores(candidates: list[dict]) -> None:
     for i, c in enumerate(candidates):
         c.setdefault("rerank_score", float(n - i))
         # Normalise linearly: 1st → 1.0, last → ~0.5 for up to 20 candidates
-        c.setdefault("similarity_score", round(1.0 - (i / (2 * n)), 4))
+        score = round(1.0 - (i / (2 * n)), 4)
+        c.setdefault("similarity_score", score)
+        # No cross-encoder logit available — use the positional score as a
+        # best-effort confidence so the L1 gate still has a value to read.
+        c.setdefault("rerank_confidence", score)

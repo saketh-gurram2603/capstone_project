@@ -1,8 +1,12 @@
 """
-LLM integration with:
+LLM integration — Azure OpenAI backend with:
   - Circuit breaker (pybreaker): opens after 5 failures in 60 s
   - Retry logic    (tenacity):   3 attempts, exponential back-off 2s → 4s → 8s
   - Local fallback (Flan-T5):   loaded at startup, used when circuit is open
+
+Azure deployment names are used as the ``model`` parameter in every API call;
+they are configured via app_config.json (LLM.L1_MODEL / LLM.L2_MODEL) and
+read from the environment at startup.
 """
 
 import asyncio
@@ -10,7 +14,7 @@ import os
 from typing import Any, Optional
 
 import pybreaker
-from openai import AsyncOpenAI
+from openai import AsyncAzureOpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -26,11 +30,11 @@ from src.handlers.logger import get_logger, log_error, log_info, log_warning
 logger = get_logger("integrations.llm")
 
 # ── Module-level state ────────────────────────────────────────────────────────
-_openai_client: Optional[AsyncOpenAI] = None
+_openai_client: Optional[AsyncAzureOpenAI] = None
 _flan_tokenizer = None
 _flan_model = None
-_l1_model: str = "gpt-4o-mini"
-_l2_model: str = "gpt-4o"
+_l1_model: str = "synapt-dev-gpt-4o-mini"
+_l2_model: str = "synapt-dev-gpt-4o-mini"
 _request_timeout: float = 30.0
 _max_retries: int = 3
 _retry_base_delay: float = 2.0
@@ -39,20 +43,22 @@ _retry_base_delay: float = 2.0
 _breaker = pybreaker.CircuitBreaker(
     fail_max=5,
     reset_timeout=60,
-    name="openai_llm",
+    name="azure_openai_llm",
 )
 
 
 def init_llm(
-    openai_api_key: str,
-    l1_model: str = "gpt-4o-mini",
-    l2_model: str = "gpt-4o",
+    azure_api_key: str,
+    azure_endpoint: str,
+    azure_api_version: str,
+    l1_model: str = "synapt-dev-gpt-4o-mini",
+    l2_model: str = "synapt-dev-gpt-4o-mini",
     fallback_model: str = "google/flan-t5-base",
     request_timeout: float = 30.0,
     max_retries: int = 3,
     retry_base_delay: float = 2.0,
 ) -> None:
-    """Load Flan-T5 and configure OpenAI client. Called once at startup."""
+    """Load Flan-T5 and configure Azure OpenAI client. Called once at startup."""
     global _openai_client, _flan_tokenizer, _flan_model
     global _l1_model, _l2_model, _request_timeout, _max_retries, _retry_base_delay
 
@@ -62,8 +68,15 @@ def init_llm(
     _max_retries = max_retries
     _retry_base_delay = retry_base_delay
 
-    _openai_client = AsyncOpenAI(api_key=openai_api_key)
-    log_info("OpenAI LLM client initialised | l1=%s l2=%s", l1_model, l2_model)
+    _openai_client = AsyncAzureOpenAI(
+        api_key=azure_api_key,
+        azure_endpoint=azure_endpoint,
+        api_version=azure_api_version,
+    )
+    log_info(
+        "Azure OpenAI LLM client initialised | endpoint=%s version=%s l1=%s l2=%s",
+        azure_endpoint, azure_api_version, l1_model, l2_model,
+    )
 
     log_info("Loading Flan-T5 fallback model '%s' ...", fallback_model)
     try:
@@ -91,7 +104,7 @@ def init_llm(
 async def chat_completion(
     messages: list[dict],
     model: Optional[str] = None,
-    temperature: float = 0.3,
+    temperature: float = 0,
     max_tokens: int = 1024,
 ) -> tuple[str, bool]:
     """
@@ -179,14 +192,11 @@ def _messages_to_prompt(messages: list[dict]) -> str:
 
 
 async def llm_health_check() -> bool:
-    """Return True if OpenAI API is reachable (does NOT count against circuit breaker)."""
+    """
+    Return True if the Azure OpenAI client is configured and the circuit is closed.
+    Azure does not expose a cost-free probe endpoint, so we check client + breaker
+    state rather than making a live API call here.
+    """
     if _openai_client is None:
         return False
-    try:
-        await asyncio.wait_for(
-            _openai_client.models.list(),
-            timeout=5.0,
-        )
-        return True
-    except Exception:
-        return False
+    return _breaker.current_state != "open"

@@ -34,6 +34,10 @@ class ChatSession:
     last_active: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_escalated: bool = False
     escalation_ticket_id: Optional[str] = None
+    # Serialises concurrent turns on the SAME session so the read-modify-write of
+    # current_index across await points (LLM calls) cannot interleave. Excluded
+    # from equality/repr — it is runtime-only state.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, compare=False, repr=False)
 
 
 class SessionManager:

@@ -152,6 +152,70 @@ def build_search_text(title: str, description: str) -> str:
     return ": ".join(parts) if len(parts) > 1 else (parts[0] if parts else "")
 
 
+# ── Severity enrichment ─────────────────────────────────────────────────────
+# The MediaServer dataset carries no impact/urgency/priority columns, so the
+# /search priority & impact filters would match nothing. We derive these fields
+# at ingest from the incident text + category using an explainable heuristic, so
+# metadata filtering (priority/impact/category) is genuinely functional.
+
+_HIGH_IMPACT_CATEGORIES = {"Security", "Database", "Network"}
+_MED_IMPACT_CATEGORIES = {"Storage", "Application", "Hardware", "Performance"}
+
+_HIGH_SEVERITY_KEYWORDS = (
+    "crash", "outage", "down", "unavailable", "fail", "failure", "cannot",
+    "unable", "breach", "corrupt", "data loss", "exceeded", "threshold",
+    "freeze", "frozen", "unresponsive", "denied", "critical", "not working",
+    "timeout", "timed out", "lost",
+)
+_MED_SEVERITY_KEYWORDS = (
+    "slow", "slowly", "delay", "delayed", "intermittent", "degrad", "latency",
+    "partial", "lag", "spike", "high cpu", "high memory", "retry", "warning",
+)
+
+
+def derive_severity(category: str, title: str, description: str) -> tuple[str, str, str]:
+    """
+    Derive (impact, urgency, priority) for an incident.
+
+    urgency : from symptom keywords in the title + description.
+    impact  : from the category, escalated to High when high-severity symptoms
+              are present.
+    priority: impact × urgency matrix (same mapping as agents.classify_priority).
+    """
+    text = f"{title} {description}".lower()
+
+    if any(k in text for k in _HIGH_SEVERITY_KEYWORDS):
+        urgency = "High"
+    elif any(k in text for k in _MED_SEVERITY_KEYWORDS):
+        urgency = "Medium"
+    else:
+        urgency = "Low"
+
+    cat = (category or "").strip()
+    if urgency == "High" or cat in _HIGH_IMPACT_CATEGORIES:
+        impact = "High"
+    elif cat in _MED_IMPACT_CATEGORIES:
+        impact = "Medium"
+    else:
+        impact = "Low"
+
+    priority = _priority_from(impact, urgency)
+    return impact, urgency, priority
+
+
+def _priority_from(impact: str, urgency: str) -> str:
+    """Map impact × urgency to P1–P4 (additive matrix)."""
+    score = {"High": 3, "Medium": 2, "Low": 1}
+    total = score.get(impact, 2) + score.get(urgency, 2)
+    if total >= 6:
+        return "P1"
+    if total >= 5:
+        return "P2"
+    if total >= 3:
+        return "P3"
+    return "P4"
+
+
 def _content_hash(title: str, description: str, resolution: str) -> str:
     """
     Fingerprint an incident by its (problem, solution) pair:
@@ -231,11 +295,18 @@ def _process_row(
 
     search_text = build_search_text(title, description)
 
+    # Derive impact/urgency/priority so metadata filtering is functional
+    # (the source dataset has no such columns).
+    impact, urgency, priority = derive_severity(category, title, description)
+
     return {
         "incident_id": incident_id,
         "ticket_id": ticket_id,
         "title": title,
         "category": category,
+        "impact": impact,
+        "urgency": urgency,
+        "priority": priority,
         "description": description,
         "resolution_notes": resolution_notes,
         "assigned_to": asset,

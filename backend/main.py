@@ -55,6 +55,7 @@ from src.api.search import router as search_router
 from src.api.triage import router as triage_router
 from src.api.evaluation import router as evaluation_router
 from src.api.chat import router as chat_router
+from src.api.feedback import router as feedback_router
 from src.chat.session_manager import session_manager as chat_session_manager
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,12 +165,30 @@ async def lifespan(app: FastAPI):
                 "in-memory fallback. | error=%s", _db_exc,
             )
 
+    # ── Seed sample feedback (demo data; only if the store is empty) ─────────
+    try:
+        from src.feedback.feedback_store import seed_sample_feedback
+        await seed_sample_feedback()
+    except Exception as _seed_exc:
+        log_warning("Feedback seed skipped | error=%s", _seed_exc)
+
+    # ── Azure credentials (shared across LLM + embeddings + judge) ───────────
+    azure_api_key      = require_env("AZURE_OPENAI_API_KEY")
+    azure_endpoint     = require_env("AZURE_OPENAI_ENDPOINT")
+    azure_llm_version  = get_env("AZURE_OPENAI_API_VERSION") \
+                         or app_config["LLM"]["AZURE_API_VERSION"]
+    azure_emb_version  = get_env("AZURE_OPENAI_EMBEDDING_API_VERSION") \
+                         or app_config["LLM"]["AZURE_EMBEDDING_API_VERSION"]
+
     # ── Embeddings ────────────────────────────────────────────────────────────
     init_embeddings(
-        openai_api_key=require_env("OPENAI_API_KEY"),
+        azure_api_key=azure_api_key,
+        azure_endpoint=azure_endpoint,
+        azure_api_version=azure_emb_version,
         embedding_model=app_config["LLM"]["EMBEDDING_MODEL"],
         fallback_model=app_config["LLM"]["EMBEDDING_FALLBACK_MODEL"],
         embedding_ttl=app_config["CACHE"]["EMBEDDING_TTL_SECONDS"],
+        expected_dim=app_config["QDRANT"]["VECTOR_SIZE"],
     )
 
     # ── BM25 index + payload map ──────────────────────────────────────────────
@@ -198,15 +217,26 @@ async def lifespan(app: FastAPI):
         model_name=app_config["LLM"].get("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
     )
 
-    # ── LLM (OpenAI + Flan-T5 fallback) ──────────────────────────────────────
+    # ── LLM (Azure OpenAI + Flan-T5 fallback) ────────────────────────────────
     init_llm(
-        openai_api_key=require_env("OPENAI_API_KEY"),
+        azure_api_key=azure_api_key,
+        azure_endpoint=azure_endpoint,
+        azure_api_version=azure_llm_version,
         l1_model=app_config["LLM"]["L1_MODEL"],
         l2_model=app_config["LLM"]["L2_MODEL"],
         fallback_model=app_config["LLM"]["FALLBACK_MODEL"],
         request_timeout=app_config["LLM"]["REQUEST_TIMEOUT_SECONDS"],
         max_retries=app_config["LLM"]["MAX_RETRIES"],
         retry_base_delay=app_config["LLM"]["RETRY_BASE_DELAY_SECONDS"],
+    )
+
+    # ── LLM Judge (Azure OpenAI — for DeepEval evaluation metrics) ───────────
+    from src.evaluation.llm_judge import init_llm_judge
+    init_llm_judge(
+        azure_api_key=azure_api_key,
+        azure_endpoint=azure_endpoint,
+        azure_api_version=azure_llm_version,
+        deployment=app_config["LLM"]["L1_MODEL"],
     )
 
     # ── Triage graph (LangGraph — compiled once, reused per request) ─────────
@@ -266,6 +296,7 @@ app.include_router(search_router, prefix=prefix)
 app.include_router(triage_router, prefix=prefix)
 app.include_router(evaluation_router, prefix=prefix)
 app.include_router(chat_router, prefix=prefix)
+app.include_router(feedback_router, prefix=prefix)
 
 log_info(
     "Routers registered | prefix=%s | docs=%s/docs",
