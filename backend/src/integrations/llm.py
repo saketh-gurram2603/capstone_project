@@ -137,7 +137,9 @@ async def chat_completion(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=8),
-    retry=retry_if_exception_type((asyncio.TimeoutError, Exception)),
+    # Only retry transient network/timeout errors — NOT auth errors (400/401/403),
+    # invalid-model errors, or CircuitBreakerError (which must bubble up immediately).
+    retry=retry_if_exception_type((asyncio.TimeoutError, ConnectionError, TimeoutError)),
     reraise=True,
 )
 async def _openai_with_retry(
@@ -146,9 +148,15 @@ async def _openai_with_retry(
     temperature: float,
     max_tokens: int,
 ) -> str:
-    """OpenAI call wrapped in tenacity retry + pybreaker circuit breaker."""
-    @_breaker
-    async def _call():
+    """
+    Azure OpenAI call wrapped in tenacity retry + pybreaker circuit breaker.
+
+    The circuit breaker is applied via call_async() — the correct async path.
+    The previous @_breaker decorator on a nested async def was inert because
+    pybreaker's sync __call__ received a coroutine object (not the result),
+    counted every call as an instant success, and never tripped.
+    """
+    async def _make_request():
         return await asyncio.wait_for(
             _openai_client.chat.completions.create(
                 model=model,
@@ -159,7 +167,7 @@ async def _openai_with_retry(
             timeout=_request_timeout,
         )
 
-    response = await _call()
+    response = await _breaker.call_async(_make_request)
     return response.choices[0].message.content
 
 

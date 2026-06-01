@@ -55,7 +55,7 @@ def make_l2_node(app_config: dict) -> Callable[[IncidentState], dict]:
     Factory: returns an async L2 analysis node.
     Called once when the graph is compiled.
     """
-    l2_model = app_config.get("LLM", {}).get("L2_MODEL", "gpt-4o")
+    l2_model = app_config.get("LLM", {}).get("L2_MODEL", "synapt-dev-gpt-4o-mini")
     l2_threshold = app_config.get("RETRIEVAL", {}).get("L2_CONFIDENCE_THRESHOLD", 0.55)
     tavily_max = app_config.get("RETRIEVAL", {}).get("TAVILY_MAX_RESULTS", 5)
 
@@ -98,7 +98,7 @@ def make_l2_node(app_config: dict) -> Callable[[IncidentState], dict]:
             raw_response, fallback_used = await chat_completion(
                 messages=messages,
                 model=l2_model,
-                temperature=0.2,
+                temperature=0,
                 max_tokens=768,
             )
         except Exception as exc:

@@ -1,10 +1,16 @@
 """
-Standalone ingestion script — loads incidents.xlsx directly into Qdrant Cloud.
+Standalone ingestion script — loads incidents.xlsx directly into Qdrant Cloud
+via Azure OpenAI embeddings.
 
 Usage (run from the backend/ directory):
     python ingest_data.py
 
-No server, no Redis needed. Reads env from env/development.env directly.
+No server, no Redis needed. Reads credentials from env/development.env.
+
+NOTE: For a full ingest that includes PII masking, deduplication, BM25 index
+build, and derived impact/urgency/priority metadata, prefer the API endpoint:
+    POST /it-kb/ingest   (multipart file upload)
+This script is a lightweight CLI shortcut that bypasses the full pipeline.
 """
 
 import asyncio
@@ -17,20 +23,27 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / "env" / "development.env")
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-QDRANT_URL     = os.environ.get("QDRANT_URL", "http://localhost:6333")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+AZURE_API_KEY           = os.environ.get("AZURE_OPENAI_API_KEY", "")
+AZURE_ENDPOINT          = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_EMB_API_VERSION   = os.environ.get("AZURE_OPENAI_EMBEDDING_API_VERSION", "2024-05-01-preview")
+AZURE_EMB_DEPLOYMENT    = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
+                                         "synapt-dev-text-embedding-ada-002")
+QDRANT_URL              = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY          = os.environ.get("QDRANT_API_KEY", "")
 
-if not OPENAI_API_KEY or OPENAI_API_KEY == "your_openai_api_key_here":
-    print("❌  OPENAI_API_KEY not set in env/development.env")
+if not AZURE_API_KEY:
+    print("❌  AZURE_OPENAI_API_KEY not set in env/development.env")
+    sys.exit(1)
+
+if not AZURE_ENDPOINT:
+    print("❌  AZURE_OPENAI_ENDPOINT not set in env/development.env")
     sys.exit(1)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 XLSX_PATH       = Path(__file__).parent.parent / "data" / "incidents.xlsx"
 COLLECTION_NAME = "incidents"
 VECTOR_SIZE     = 1536          # text-embedding-ada-002
-EMBEDDING_MODEL = "text-embedding-ada-002"
-BATCH_SIZE      = 50            # incidents per OpenAI embed call
+BATCH_SIZE      = 50
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,9 +81,9 @@ def load_xlsx(path: Path) -> list[dict]:
     skipped   = 0
 
     for _, row in df.iterrows():
-        incident_id     = clean(row.get("Incident ID", ""))
-        description     = clean(row.get("Description", ""))
-        resolution      = clean(row.get("Solution", ""))
+        incident_id  = clean(row.get("Incident ID", ""))
+        description  = clean(row.get("Description", ""))
+        resolution   = clean(row.get("Solution", ""))
 
         if not incident_id or not description or not resolution:
             skipped += 1
@@ -84,14 +97,14 @@ def load_xlsx(path: Path) -> list[dict]:
         search_text = f"{title}: {description}" if title else description
 
         incidents.append({
-            "incident_id":    incident_id,
-            "ticket_id":      ticket,
-            "title":          title,
-            "category":       category,
-            "description":    description,
+            "incident_id":      incident_id,
+            "ticket_id":        ticket,
+            "title":            title,
+            "category":         category,
+            "description":      description,
             "resolution_notes": resolution,
-            "assigned_to":    asset,
-            "search_text":    search_text,
+            "assigned_to":      asset,
+            "search_text":      search_text,
         })
 
     print(f"    Parsed:  {len(incidents)}")
@@ -100,11 +113,15 @@ def load_xlsx(path: Path) -> list[dict]:
 
 
 async def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of texts with OpenAI ada-002."""
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    """Embed a batch of texts with Azure OpenAI text-embedding-ada-002."""
+    from openai import AsyncAzureOpenAI
+    client = AsyncAzureOpenAI(
+        api_key=AZURE_API_KEY,
+        azure_endpoint=AZURE_ENDPOINT,
+        api_version=AZURE_EMB_API_VERSION,
+    )
     response = await client.embeddings.create(
-        model=EMBEDDING_MODEL,
+        model=AZURE_EMB_DEPLOYMENT,
         input=texts,
     )
     return [item.embedding for item in response.data]
@@ -140,7 +157,8 @@ async def ingest(incidents: list[dict]) -> None:
     ]
     total_upserted = 0
 
-    print(f"\n🚀  Embedding + upserting {len(incidents)} incidents in {len(batches)} batches …\n")
+    print(f"\n🚀  Embedding + upserting {len(incidents)} incidents "
+          f"via Azure ({AZURE_EMB_DEPLOYMENT}) in {len(batches)} batches …\n")
 
     for i, batch in enumerate(batches, 1):
         texts   = [inc["search_text"] for inc in batch]
@@ -151,14 +169,14 @@ async def ingest(incidents: list[dict]) -> None:
                 id=incident_id_to_qdrant_id(inc["incident_id"]),
                 vector=vec,
                 payload={
-                    "incident_id":     inc["incident_id"],
-                    "ticket_id":       inc.get("ticket_id", ""),
-                    "title":           inc.get("title", ""),
-                    "category":        inc.get("category", ""),
-                    "description":     inc["description"],
+                    "incident_id":      inc["incident_id"],
+                    "ticket_id":        inc.get("ticket_id", ""),
+                    "title":            inc.get("title", ""),
+                    "category":         inc.get("category", ""),
+                    "description":      inc["description"],
                     "resolution_notes": inc["resolution_notes"],
-                    "assigned_to":     inc.get("assigned_to", ""),
-                    "search_text":     inc["search_text"],
+                    "assigned_to":      inc.get("assigned_to", ""),
+                    "search_text":      inc["search_text"],
                 },
             )
             for inc, vec in zip(batch, vectors)
@@ -167,18 +185,16 @@ async def ingest(incidents: list[dict]) -> None:
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
         total_upserted += len(batch)
 
-        bar   = "█" * i + "░" * (len(batches) - i)
-        pct   = round(total_upserted / len(incidents) * 100)
+        bar = "█" * i + "░" * (len(batches) - i)
+        pct = round(total_upserted / len(incidents) * 100)
         print(f"  [{bar}] {pct:3d}%  batch {i}/{len(batches)}  ({total_upserted} upserted)", end="\r")
 
     print(f"\n\n✅  Done — {total_upserted} incidents in Qdrant collection '{COLLECTION_NAME}'")
-
-    # Verify
     final_count = qdrant.count(COLLECTION_NAME).count
     print(f"📊  Collection now has {final_count} points")
 
 
-# ── Also build + save BM25 index ─────────────────────────────────────────────
+# ── BM25 index ────────────────────────────────────────────────────────────────
 
 def build_bm25(incidents: list[dict]) -> None:
     """Build BM25 index and save it to data/ for the retrieval layer."""
@@ -195,11 +211,13 @@ def build_bm25(incidents: list[dict]) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main():
-    print("=" * 55)
-    print("  Incident KB — Data Ingestion")
-    print(f"  Target: {QDRANT_URL}")
-    print(f"  File:   {XLSX_PATH}")
-    print("=" * 55 + "\n")
+    print("=" * 60)
+    print("  Incident KB — Data Ingestion (Azure OpenAI)")
+    print(f"  Endpoint:   {AZURE_ENDPOINT}")
+    print(f"  Deployment: {AZURE_EMB_DEPLOYMENT}")
+    print(f"  Qdrant:     {QDRANT_URL}")
+    print(f"  File:       {XLSX_PATH}")
+    print("=" * 60 + "\n")
 
     if not XLSX_PATH.exists():
         print(f"❌  Dataset not found at {XLSX_PATH}")

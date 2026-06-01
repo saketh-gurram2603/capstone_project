@@ -51,7 +51,7 @@ def make_l1_node(
     Factory: returns an async L1 triage node with vector_store injected.
     Called once when the graph is compiled.
     """
-    l1_model = app_config.get("LLM", {}).get("L1_MODEL", "gpt-4o-mini")
+    l1_model = app_config.get("LLM", {}).get("L1_MODEL", "synapt-dev-gpt-4o-mini")
     l1_threshold = app_config.get("RETRIEVAL", {}).get("L1_CONFIDENCE_THRESHOLD", 0.80)
 
     async def l1_node(state: IncidentState) -> dict:

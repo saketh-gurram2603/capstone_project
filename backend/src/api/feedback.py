@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from src.core.dependencies import require_api_key
 from src.feedback.feedback_store import (
     get_feedback_stats,
     list_feedback,
@@ -37,6 +38,7 @@ router = APIRouter(tags=["Feedback"])
     summary="List user feedback for admin review",
 )
 async def get_feedback(
+    _: str = Depends(require_api_key),
     status: Optional[str] = Query(
         None,
         description="Filter by review status",
@@ -73,6 +75,7 @@ async def get_feedback(
 async def review_feedback(
     feedback_id: str,
     body: FeedbackReviewRequest,
+    _: str = Depends(require_api_key),
 ) -> FeedbackItem:
     """Admin action — flips the feedback status to VERIFIED or DISMISSED."""
     log_info("POST /feedback/%s/review | status=%s", feedback_id, body.status)

@@ -280,14 +280,14 @@ class ChatAgent:
         )
 
         try:
-            l1_model = self._app_config.get("LLM", {}).get("L1_MODEL", "gpt-4o-mini")
+            l1_model = self._app_config.get("LLM", {}).get("L1_MODEL", "synapt-dev-gpt-4o-mini")
             response, _ = await chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 model=l1_model,
-                temperature=0.2,
+                temperature=0,
                 max_tokens=600,
             )
             header = f"**Fix {option_index + 1} of {total}** _(verified {occurrence}× in KB)_\n\n"
@@ -322,14 +322,14 @@ class ChatAgent:
         )
 
         try:
-            l1_model = self._app_config.get("LLM", {}).get("L1_MODEL", "gpt-4o-mini")
+            l1_model = self._app_config.get("LLM", {}).get("L1_MODEL", "synapt-dev-gpt-4o-mini")
             response, _ = await chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 model=l1_model,
-                temperature=0.3,
+                temperature=0,
                 max_tokens=400,
             )
         except Exception as exc:

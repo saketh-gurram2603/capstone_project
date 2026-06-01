@@ -188,7 +188,6 @@ async def lifespan(app: FastAPI):
         embedding_model=app_config["LLM"]["EMBEDDING_MODEL"],
         fallback_model=app_config["LLM"]["EMBEDDING_FALLBACK_MODEL"],
         embedding_ttl=app_config["CACHE"]["EMBEDDING_TTL_SECONDS"],
-        expected_dim=app_config["QDRANT"]["VECTOR_SIZE"],
     )
 
     # ── BM25 index + payload map ──────────────────────────────────────────────
