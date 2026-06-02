@@ -54,7 +54,7 @@ Support engineers describe a production problem in natural language. The system:
 
 ## 2. Architecture
 
-![High-Level Architecture Diagram](<images/ChatGPT Image Jun 1, 2026, 12_36_54 PM.png>)
+![High-Level Architecture Diagram](images/architecture.png)
 
 ### Component Responsibilities
 
