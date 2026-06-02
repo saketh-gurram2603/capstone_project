@@ -1,11 +1,9 @@
 """
 Feedback API.
 
-GET  /feedback                     — list feedback + aggregate stats (admin page)
-POST /feedback/{id}/review         — admin verifies or dismisses a feedback item
-
-Feedback itself is captured automatically inside the chat flow
-(see src.chat.chat_agent), so there is no public create endpoint here.
+POST /feedback                     — user submits feedback from the chat thumbs UI
+GET  /feedback                     — list feedback + aggregate stats (admin, auth required)
+POST /feedback/{id}/review         — admin verifies or dismisses a feedback item (auth required)
 """
 
 from __future__ import annotations
@@ -21,15 +19,64 @@ from src.feedback.feedback_store import (
     update_feedback,
 )
 from src.handlers.logger import get_logger, log_info
+from src.feedback.feedback_store import record_feedback
 from src.models.feedback import (
     FeedbackItem,
     FeedbackListResponse,
     FeedbackReviewRequest,
     FeedbackStats,
+    FeedbackSubmitRequest,
 )
 
 logger = get_logger("api.feedback")
 router = APIRouter(tags=["Feedback"])
+
+
+@router.post(
+    "/feedback",
+    response_model=FeedbackItem,
+    summary="Submit feedback from the chat thumbs UI",
+)
+async def submit_feedback(body: FeedbackSubmitRequest) -> FeedbackItem:
+    """
+    Public endpoint — no auth required.
+    The frontend sends session_id + fix_index + sentiment + optional reason.
+    The backend looks up the session to retrieve resolution metadata so the
+    admin queue has full context.
+    """
+    log_info("POST /feedback | session=%s fix=%d sentiment=%s", body.session_id, body.fix_index, body.sentiment)
+
+    from src.chat.session_manager import session_manager
+
+    session     = session_manager.get_session(body.session_id)
+    query       = ""
+    fix_total   = 0
+    res_text    = ""
+    inc_ids: list[str] = []
+    occ_count   = 0
+
+    if session:
+        query     = session.incident_description
+        fix_total = len(session.resolution_options)
+        idx = body.fix_index - 1          # convert to 0-based
+        if 0 <= idx < len(session.resolution_options):
+            opt       = session.resolution_options[idx]
+            res_text  = opt.get("resolution_text", "")
+            inc_ids   = opt.get("source_incident_ids", [])
+            occ_count = opt.get("occurrence_count", 1)
+
+    record = await record_feedback(
+        session_id=body.session_id,
+        query=query,
+        sentiment=body.sentiment,
+        fix_index=body.fix_index,
+        fix_total=fix_total,
+        resolution_text=res_text,
+        incident_ids=inc_ids,
+        occurrence_count=occ_count,
+        reason=body.reason,
+    )
+    return FeedbackItem(**record)
 
 
 @router.get(

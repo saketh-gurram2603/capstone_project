@@ -74,7 +74,7 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - backend_logs:/app/logs
     command: ["python", "main.py", "docker"]
     healthcheck:

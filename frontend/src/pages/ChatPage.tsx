@@ -11,7 +11,7 @@ const PLACEHOLDER_QUERIES = [
 ]
 
 export default function ChatPage() {
-  const { messages, isLoading, error, sendMessage, resetSession } = useChatStore()
+  const { messages, isLoading, error, sendMessage, resetSession, sessionId } = useChatStore()
   const [input, setInput] = useState('')
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -122,6 +122,7 @@ export default function ChatPage() {
               key={msg.id}
               message={msg}
               onActionClick={text => handleSend(text)}
+              sessionId={sessionId}
             />
           ))}
         </AnimatePresence>

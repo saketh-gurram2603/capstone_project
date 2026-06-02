@@ -54,41 +54,7 @@ Support engineers describe a production problem in natural language. The system:
 
 ## 2. Architecture
 
-```
-                         ┌──────────────────────────────────────────────────────┐
-                         │                  CLIENT TIER                         │
-                         │   React 18 + Vite SPA  (Search · Triage · Analytics) │
-                         └──────────────────────┬───────────────────────────────┘
-                                                │  HTTP/JSON
-                         ┌──────────────────────▼───────────────────────────────┐
-                         │               API GATEWAY (Production)               │
-                         │      NGINX / AWS API Gateway + TLS termination       │
-                         └──────────────────────┬───────────────────────────────┘
-                                                │
-                         ┌──────────────────────▼───────────────────────────────┐
-                         │            LOAD BALANCER (Production)                │
-                         │        Round-robin across FastAPI replicas           │
-                         └──────┬───────────────┬──────────────────┬────────────┘
-                                │               │                  │
-                    ┌───────────▼──┐  ┌──────────▼──┐  ┌──────────▼──┐
-                    │  FastAPI #1  │  │  FastAPI #2  │  │  FastAPI #3  │
-                    │  (stateless) │  │  (stateless) │  │  (stateless) │
-                    └───────┬──────┘  └──────┬───────┘  └──────┬───────┘
-                            │               │                  │
-         ┌──────────────────┼───────────────┘                  │
-         │                  │                                   │
-┌────────▼──────┐  ┌────────────────────────┐  ┌──────▼──────────┐
-│  Qdrant       │  │  Postgres              │  │  OpenAI API     │
-│  Vector DB    │  │  (tickets + eval runs) │  │  (LLM + Embeds) │
-│  (HNSW index) │  │  SQLAlchemy async ORM  │  │  + Tavily API   │
-└───────────────┘  └────────────────────────┘  └─────────────────┘
-
-LOCAL FALLBACKS (loaded at startup, never on first request):
-  OpenAI timeout  →  Flan-T5-base (HuggingFace Transformers)
-  Ada-002 timeout →  all-MiniLM-L6-v2 (sentence-transformers)
-  Qdrant down     →  BM25-only keyword search (rank_bm25 + pickle index)
-  Postgres down   →  In-memory fallback for tickets + eval results
-```
+![High-Level Architecture Diagram](<images/ChatGPT Image Jun 1, 2026, 12_36_54 PM.png>)
 
 ### Component Responsibilities
 

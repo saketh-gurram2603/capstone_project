@@ -54,3 +54,12 @@ class FeedbackReviewRequest(BaseModel):
         max_length=1000,
         description="Optional note describing what the admin did or decided.",
     )
+
+
+class FeedbackSubmitRequest(BaseModel):
+    """Request body for POST /feedback — submitted by the user from the chat UI."""
+
+    session_id: str = Field(..., description="Active chat session ID")
+    fix_index: int  = Field(..., description="1-based index of the fix being rated")
+    sentiment: Literal["positive", "negative"]
+    reason: Optional[str] = Field(None, max_length=1000)

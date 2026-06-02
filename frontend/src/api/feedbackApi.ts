@@ -53,6 +53,29 @@ export async function getFeedback(
   return res.json()
 }
 
+export async function submitFeedback(
+  sessionId: string,
+  fixIndex: number,
+  sentiment: Sentiment,
+  reason?: string,
+): Promise<FeedbackItem> {
+  const res = await fetch(`${BASE}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      fix_index: fixIndex,
+      sentiment,
+      reason: reason ?? null,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? 'Failed to submit feedback')
+  }
+  return res.json()
+}
+
 export async function reviewFeedback(
   feedbackId: string,
   status: 'VERIFIED' | 'DISMISSED',

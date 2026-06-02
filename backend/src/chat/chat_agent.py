@@ -128,8 +128,6 @@ class ChatAgent:
         log_info("Chat continuation | intent=%s session=%s", intent, session.session_id)
 
         if intent == "RESOLVED":
-            # Capture positive feedback on the fix the user just confirmed worked.
-            await self._safe_record_feedback(session, sentiment="positive", reason=message)
             reply = (
                 "Great — glad that resolved your incident! "
                 "If the issue returns, feel free to start a new session. "
@@ -148,10 +146,8 @@ class ChatAgent:
         if intent == "QUESTION":
             return await self._answer_question(session, message, session_manager)
 
-        # NEXT_OPTION — the current fix didn't work. Capture negative feedback
-        # (the user's message becomes the free-text reason), then advance.
-        await self._safe_record_feedback(session, sentiment="negative", reason=message)
-
+        # NEXT_OPTION — advance to the next fix. Feedback (if any) comes
+        # explicitly from the thumbs UI, not from this button.
         next_index = session.current_index + 1
         if next_index >= len(session.resolution_options):
             return await self._escalate(
