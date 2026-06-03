@@ -65,3 +65,7 @@ backend/data/qdrant_local/
 
 # ── Evaluation debug dumps (regenerated on every eval run) ────────────────────
 backend/src/evaluation/ground_truth/_retrieval_dump.json
+
+PLAN.md
+DEMO_GUIDE.md
+~$IT_Incident_KB_Presentation.pptx

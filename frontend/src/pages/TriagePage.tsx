@@ -318,34 +318,48 @@ export default function TriagePage() {
                 </div>
               </div>
 
-              {/* L1 summary (collapsible) */}
+              {/* L1 output — always visible when escalated so you can see what L1 thought */}
               {result.l1_summary && result.escalation_level !== 'L1' && (
-                <details className="group">
-                  <summary className="flex items-center gap-1.5 cursor-pointer section-label hover:opacity-80 list-none">
-                    <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
-                    L1 KB Summary
-                  </summary>
-                  <div className="mt-2 p-3 rounded-xl text-[11px] leading-relaxed"
-                       style={{ background: 'rgba(35,198,168,0.06)', border: '1px solid rgba(35,198,168,0.15)',
+                <div>
+                  <p className="section-label mb-1.5 flex items-center gap-1.5">
+                    <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
+                          style={{ background: 'rgba(35,198,168,0.2)', color: '#23C6A8' }}>
+                      L1
+                    </span>
+                    What L1 found in the knowledge base
+                    <span className="ml-auto font-normal" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                      below 80% threshold — escalated to L2
+                    </span>
+                  </p>
+                  <div className="p-3 rounded-xl text-[11px] leading-relaxed"
+                       style={{ background: 'rgba(35,198,168,0.05)',
+                                border: '1px solid rgba(35,198,168,0.18)',
                                 color: 'var(--text-secondary)' }}>
                     {result.l1_summary}
                   </div>
-                </details>
+                </div>
               )}
 
-              {/* L2 synthesis (collapsible) */}
+              {/* L2 synthesis — always visible when escalated to L3 */}
               {result.l2_synthesis && result.escalation_level === 'L3' && (
-                <details className="group">
-                  <summary className="flex items-center gap-1.5 cursor-pointer section-label hover:opacity-80 list-none">
-                    <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
-                    L2 Web Synthesis
-                  </summary>
-                  <div className="mt-2 p-3 rounded-xl text-[11px] leading-relaxed"
-                       style={{ background: 'rgba(244,183,64,0.06)', border: '1px solid rgba(244,183,64,0.15)',
+                <div>
+                  <p className="section-label mb-1.5 flex items-center gap-1.5">
+                    <span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold flex-shrink-0"
+                          style={{ background: 'rgba(244,183,64,0.2)', color: '#F4B740' }}>
+                      L2
+                    </span>
+                    What L2 found with web search
+                    <span className="ml-auto font-normal" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                      below 55% threshold — escalated to L3
+                    </span>
+                  </p>
+                  <div className="p-3 rounded-xl text-[11px] leading-relaxed"
+                       style={{ background: 'rgba(244,183,64,0.05)',
+                                border: '1px solid rgba(244,183,64,0.18)',
                                 color: 'var(--text-secondary)' }}>
                     {result.l2_synthesis}
                   </div>
-                </details>
+                </div>
               )}
 
               {/* Meta */}

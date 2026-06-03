@@ -15,15 +15,15 @@ import {
 // ── Metric metadata ───────────────────────────────────────────────────────────
 
 const LABEL_MAP: Record<string, string> = {
-  ndcg_at_k:                   'NDCG@10',
-  map_at_k:                    'MAP@10',
-  recall_at_k:                 'Recall@10',
-  precision_at_k:              'P@10',
-  avg_faithfulness:            'Faithfulness',
-  avg_answer_relevancy:        'Relevancy',
-  avg_contextual_precision:    'Ctx Precision',
-  fix_accuracy:                'Fix Accuracy',
-  resolution_time_mae_hours:   'Res. Time MAE',
+  ndcg_at_k:                   'Ranking Quality',
+  map_at_k:                    'Search Precision',
+  recall_at_k:                 'Coverage Rate',
+  precision_at_k:              'Hit Rate',
+  avg_faithfulness:            'No Hallucination',
+  avg_answer_relevancy:        'Answer Relevance',
+  avg_contextual_precision:    'Context Quality',
+  fix_accuracy:                'Fix Match Rate',
+  resolution_time_mae_hours:   'Time Prediction',
 }
 
 const ICONS: Record<string, typeof TrendingUp> = {
@@ -39,15 +39,15 @@ const ICONS: Record<string, typeof TrendingUp> = {
 }
 
 const DESC: Record<string, string> = {
-  ndcg_at_k:                 'Ranking quality',
-  map_at_k:                  'Avg precision',
-  recall_at_k:               'Coverage rate',
-  precision_at_k:            'Result accuracy',
-  avg_faithfulness:          'LLM-as-Judge',
-  avg_answer_relevancy:      'LLM-as-Judge',
-  avg_contextual_precision:  'LLM-as-Judge',
-  fix_accuracy:              'Custom metric',
-  resolution_time_mae_hours: 'Custom metric',
+  ndcg_at_k:                 'Best results ranked first',
+  map_at_k:                  'Relevant results per search',
+  recall_at_k:               'Known answers found',
+  precision_at_k:            'Useful results in top 10',
+  avg_faithfulness:          'Answer grounded in data',
+  avg_answer_relevancy:      'Answer matches the question',
+  avg_contextual_precision:  'Retrieved context is relevant',
+  fix_accuracy:              'Correct fix surfaced',
+  resolution_time_mae_hours: 'Time estimate accuracy',
 }
 
 // Metrics where the score is in hours (not a 0–1 fraction)
@@ -56,24 +56,24 @@ const HOUR_METRICS = new Set(['resolution_time_mae_hours'])
 // Improvement tips shown in the popup per metric
 const TIPS: Record<string, string[]> = {
   ndcg_at_k: [
-    'Ensure ground truth relevant IDs cover all semantically similar incidents in the expanded dataset.',
-    'Tune RRF fusion weights to better balance BM25 and vector search contributions.',
+    'Ensure the ground truth dataset covers all relevant incidents including newly added ones.',
+    'Tune the balance between keyword search and semantic search using RRF weights.',
     'Lower the L1 confidence threshold slightly to surface more relevant candidates.',
   ],
   map_at_k: [
-    'Update the ground truth dataset to mark newly added incidents as relevant for each query.',
-    'Increase the number of ground truth relevant IDs per test case from 4 to 6–8.',
-    'Improve BM25 tokenisation to better handle technical abbreviations.',
+    'Update the ground truth dataset to mark all semantically similar incidents as relevant.',
+    'Increase the number of relevant incident IDs per test case from 4 to 6–8.',
+    'Improve keyword search tokenisation to better handle technical abbreviations.',
   ],
   recall_at_k: [
-    'Increase adaptive-K (try k_max = 30) to retrieve more candidates before reranking.',
-    'Add more diverse descriptions to the dataset for underrepresented problem types.',
-    'Ensure all semantically relevant incidents in the expanded dataset are tagged in the ground truth.',
+    'Increase the maximum candidate count (k_max) from 20 to 30 to retrieve more before reranking.',
+    'Add more diverse incident descriptions for problem types with few examples.',
+    'Make sure all semantically relevant incidents in the expanded dataset are in the ground truth.',
   ],
   precision_at_k: [
-    'Reduce TOP_K_FINAL from 10 to 5 — P@5 is naturally higher when ground truth has ~4 relevant docs.',
-    'Improve cross-encoder reranker precision by fine-tuning on domain-specific incident pairs.',
-    'Apply a minimum similarity score threshold (≥ 0.45) to filter low-confidence tail results.',
+    'Reduce results shown from 10 to 5 — fewer results means each one carries more weight.',
+    'Improve the cross-encoder reranker to better distinguish relevant from irrelevant incidents.',
+    'Apply a minimum similarity threshold (e.g. 0.45) to filter weak tail results.',
   ],
   avg_faithfulness: [
     'Ensure retrieved context always includes the full resolution_notes, not just description.',

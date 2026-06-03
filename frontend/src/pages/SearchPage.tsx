@@ -4,11 +4,16 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, SlidersHorizontal, Zap, Database, Clock, X,
-  ChevronRight, Sparkles, ArrowRight,
+  ChevronRight, Sparkles, ArrowRight, AlertTriangle,
+  CheckCircle, Loader,
 } from 'lucide-react'
 import { searchIncidents, type SearchFilters, type SearchResponse } from '../api/searchApi'
+import { runTriage, type TriageResult } from '../api/triageApi'
 import IncidentCard from '../components/IncidentCard'
 import ResolutionPanel from '../components/ResolutionPanel'
+
+// If the top search result scores below this, show the low-confidence banner
+const LOW_CONFIDENCE_THRESHOLD = 0.50
 
 // ── Filter config ─────────────────────────────────────────
 const PRIORITY_CHIPS = [
@@ -170,6 +175,31 @@ export default function SearchPage() {
   const data: SearchResponse | undefined = mutation.data
   const activeFilterCount = Object.values(filters).filter(Boolean).length
 
+  // ── Low-confidence escalation state ──────────────────────────────────────
+  const [escalating, setEscalating]     = useState(false)
+  const [escalateResult, setEscalateResult] = useState<TriageResult | null>(null)
+
+  const topScore     = data?.results[0]?.similarity_score ?? 1
+  const lowConfidence = !!data && !mutation.isPending && topScore < LOW_CONFIDENCE_THRESHOLD
+
+  async function handleEscalate() {
+    if (!query.trim() || escalating) return
+    setEscalating(true)
+    try {
+      const result = await runTriage({ description: query, impact: 'Medium', urgency: 'Medium' })
+      setEscalateResult(result)
+    } catch {
+      setEscalateResult(null)
+    }
+    setEscalating(false)
+  }
+
+  // Reset escalation when a new search runs
+  function handleSubmitWithReset(e: React.FormEvent) {
+    setEscalateResult(null)
+    handleSubmit(e)
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (query.trim().length < 3) return
@@ -210,7 +240,7 @@ export default function SearchPage() {
         </div>
 
         {/* Search input */}
-        <form onSubmit={handleSubmit} className="relative">
+        <form onSubmit={handleSubmitWithReset} className="relative">
           <Search className="absolute left-4 top-4 w-5 h-5 pointer-events-none"
                   style={{ color: '#4B5563' }} />
           <textarea
@@ -353,6 +383,105 @@ export default function SearchPage() {
           animate={{ opacity: 1 }}
           transition={{ duration: 0.2 }}
         >
+          {/* ── Low confidence banner ──────────────────────── */}
+          <AnimatePresence>
+            {lowConfidence && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+                className="mb-4 rounded-xl p-4"
+                style={{
+                  background: 'rgba(244,183,64,0.07)',
+                  border: '1px solid rgba(244,183,64,0.25)',
+                }}
+              >
+                {/* Not yet escalated */}
+                {!escalateResult && (
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5"
+                                   style={{ color: '#F4B740' }} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[13px] font-semibold mb-0.5"
+                         style={{ color: '#F4B740' }}>
+                        Low confidence matches
+                      </p>
+                      <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+                        The best match is only{' '}
+                        <strong style={{ color: 'var(--text-primary)' }}>
+                          {Math.round(topScore * 100)}%
+                        </strong>{' '}
+                        similar — this query may have no relevant historical incidents.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleEscalate}
+                      disabled={escalating}
+                      className="btn-surface flex-shrink-0"
+                      style={{
+                        borderColor: 'rgba(244,183,64,0.35)',
+                        color: '#F4B740',
+                        opacity: escalating ? 0.6 : 1,
+                      }}
+                    >
+                      {escalating ? (
+                        <><Loader className="w-3.5 h-3.5 animate-spin" /> Escalating…</>
+                      ) : (
+                        <><AlertTriangle className="w-3.5 h-3.5" /> Escalate to IT</>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* Escalation result */}
+                {escalateResult && (
+                  <div className="flex items-start gap-3">
+                    {escalateResult.escalation_ticket_id ? (
+                      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5"
+                                     style={{ color: '#F05A5A' }} />
+                    ) : (
+                      <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5"
+                                   style={{ color: '#23C6A8' }} />
+                    )}
+                    <div>
+                      {escalateResult.escalation_ticket_id ? (
+                        <>
+                          <p className="text-[13px] font-semibold"
+                             style={{ color: '#F05A5A' }}>
+                            Escalated to IT team
+                          </p>
+                          <p className="text-[12px] mt-0.5"
+                             style={{ color: 'var(--text-secondary)' }}>
+                            Ticket created:{' '}
+                            <span className="mono"
+                                  style={{ color: 'var(--accent-blue)' }}>
+                              {escalateResult.escalation_ticket_id}
+                            </span>
+                            {' '}— visible in the Admin Portal under Escalation Tickets.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-[13px] font-semibold"
+                             style={{ color: '#23C6A8' }}>
+                            Resolved by triage agent (
+                            {escalateResult.escalation_level})
+                          </p>
+                          <p className="text-[12px] mt-0.5"
+                             style={{ color: 'var(--text-secondary)' }}>
+                            {escalateResult.final_answer?.slice(0, 160)}
+                            {(escalateResult.final_answer?.length ?? 0) > 160 ? '…' : ''}
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Stats bar */}
           <div className="flex items-center gap-4 mb-4 flex-wrap text-[12px]"
                style={{ color: 'var(--text-secondary)' }}>

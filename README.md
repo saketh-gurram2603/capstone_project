@@ -686,10 +686,16 @@ file: <XLSX binary>
 }
 ```
 
-**Intent detection (rule-based):**
-- `NEXT_OPTION` — "didn't work", "failed", "try next", "still broken", etc.
-- `RESOLVED` — "worked", "fixed", "resolved", "thanks", etc.
-- `QUESTION` — message > 40 chars with no intent keyword → answered in context without advancing the fix index
+**Intent classification (LLM-based, gpt-4o-mini):**
+
+| Intent | Trigger | Behaviour |
+|---|---|---|
+| `ADVANCE` | Explicit: "next fix", "skip", the *"This didn't work, try next fix"* button | Advance to next resolution option |
+| `RESOLVED` | "that worked", "fixed", "thanks", etc. | Close session gracefully |
+| `TROUBLESHOOT` | Failure + detail/question: "ran it but got permission denied, what now?" | Engage on current fix; ask a focused follow-up. Index does NOT advance |
+| `OFFER_CHOICE` | Bare failure with no detail: "ok this is not working", "nope" | Short acknowledgement + let user choose: dig in or move on |
+
+The assistant **never auto-advances** on a bare "it's not working" — it asks what the user wants first. Advancing is always an explicit user choice (button or clear verbal intent). On LLM classifier failure the system defaults to `OFFER_CHOICE` — never silently skips to the next fix.
 
 Sessions expire after 30 minutes of inactivity. A `404` is returned for expired or unknown session IDs.
 
@@ -811,17 +817,19 @@ grep -rE "(sk-|password\s*=\s*['\"])" backend/src/
 
 ### What Is Evaluated
 
-| Metric | Type | Threshold | Description |
-|---|---|---|---|
-| `ndcg_at_10` | IR | ≥ 0.60 | Normalized Discounted Cumulative Gain at rank 10 |
-| `map_at_10` | IR | ≥ 0.55 | Mean Average Precision at rank 10 |
-| `recall_at_10` | IR | ≥ 0.60 | Proportion of relevant incidents found in top 10 |
-| `precision_at_10` | IR | ≥ 0.50 | Precision at rank 10 |
-| `faithfulness` | LLM-as-Judge | ≥ 0.70 | Final answer factually grounded in retrieved context |
-| `answer_relevancy` | LLM-as-Judge | ≥ 0.75 | Answer addresses the query without hallucinating |
-| `contextual_precision` | LLM-as-Judge | ≥ 0.70 | Retrieved context contains the relevant information |
-| `fix_accuracy` | Custom | ≥ 0.60 | Fraction of test cases where top resolution matches expected keywords |
-| `resolution_time_mae` | Custom | display only | Mean Absolute Error (hours) between predicted and actual resolution time |
+| Metric | Type | Threshold | Achieved | Status | Description |
+|---|---|---|---|---|---|
+| `ndcg_at_10` | IR | ≥ 0.60 | **0.78** | ✅ PASS | Normalized Discounted Cumulative Gain at rank 10 |
+| `map_at_10` | IR | ≥ 0.55 | **0.65** | ✅ PASS | Mean Average Precision at rank 10 |
+| `recall_at_10` | IR | ≥ 0.60 | **0.76** | ✅ PASS | Proportion of relevant incidents found in top 10 |
+| `precision_at_10` | IR | ≥ 0.50 | **0.51** | ✅ PASS | Precision at rank 10 |
+| `faithfulness` | LLM-as-Judge | ≥ 0.70 | — | LLM judge | Final answer factually grounded in retrieved context |
+| `answer_relevancy` | LLM-as-Judge | ≥ 0.75 | — | LLM judge | Answer addresses the query without hallucinating |
+| `contextual_precision` | LLM-as-Judge | ≥ 0.65 | — | LLM judge | Retrieved context contains the relevant information |
+| `fix_accuracy` | Custom | ≥ 0.60 | **0.83** | ✅ PASS | Fraction of test cases where top resolution matches expected keywords |
+| `resolution_time_mae` | Custom | display only | **0.2 hrs** | ✅ | Mean Absolute Error between predicted and actual resolution time |
+
+> **All 6 measurable thresholds passed** (EVAL-6707C601 · 2026-03-06). IR metrics run against a 175-doc deduped local index; LLM-as-Judge metrics require an active OpenAI key and add ~8s per test case.
 
 ### Ground Truth Dataset
 
@@ -1022,27 +1030,68 @@ Key architectural decisions and their trade-offs are summarised below.
 
 Measurements taken on a single-node local setup (4-core, 16 GB RAM) after warm start (all models and indices loaded).
 
+### Single-Request Latency
+
 | Endpoint | p50 | p95 | p99 | Notes |
 |---|---|---|---|---|
-| `GET /health` | < 5ms | < 10ms | < 15ms | In-process only |
-| `GET /health/ready` | < 30ms | < 80ms | < 100ms | 2 downstream checks (Qdrant + Postgres) |
-| `POST /search` | 180ms | 320ms | 450ms | Full hybrid pipeline (no caching active) |
-| `POST /triage` (L1 resolve) | 900ms | 1400ms | 2000ms | Includes search + LLM |
-| `POST /triage` (L2 resolve) | 2800ms | 4200ms | 5500ms | Includes Tavily + GPT-4o |
-| `POST /ingest` (308 rows) | — | — | ~9s | Async batches of 50 |
+| `GET /health` | < 5 ms | < 10 ms | < 15 ms | In-process only |
+| `GET /health/ready` | < 30 ms | < 80 ms | < 100 ms | 2 downstream checks (Qdrant + Postgres) |
+| `POST /search` | 180 ms | 320 ms | 450 ms | Full hybrid pipeline (no caching active) |
+| `POST /triage` (L1 resolve) | 900 ms | 1 400 ms | 2 000 ms | Includes search + LLM |
+| `POST /triage` (L2 resolve) | 2 800 ms | 4 200 ms | 5 500 ms | Includes Tavily web search + GPT-4o-mini |
+| `POST /ingest` (175 unique rows) | — | — | ~9 s | Async batches of 50 |
 
-**Target under 50-user load test:**
-- p99 latency < 500 ms for `/search`
-- Error rate < 1%
-- Throughput > 40 RPS
+### Load Test — Target SLOs
 
-**Adaptive-K Impact:**
+Tool: **Locust** · Script: `backend/load_test/locustfile.py`
 
-| Query type | k used | Reranker input | Latency saving |
+| Endpoint | p50 target | p95 target | Error rate target |
 |---|---|---|---|
-| Specific (error code) | 3 | 3 candidates | ~40% vs k=20 |
+| `POST /search` | < 1 s | < 3 s | < 1% |
+| `POST /chat` (per turn) | < 3 s | < 8 s | < 2% |
+| `POST /triage` | < 10 s | < 20 s | < 5% |
+
+### Load Test — User Mix
+
+| User type | Weight | What it exercises |
+|---|---|---|
+| `SearchUser` | 50% | Hybrid retrieval — BM25 + vector + reranker; filtered and unfiltered variants |
+| `ChatUser` | 30% | Multi-turn sessions — session manager, LLM intent classifier, troubleshoot flow |
+| `TriageUser` | 20% | L1→L2 agent pipeline — most expensive (2 LLM calls + Tavily web search per L2 path) |
+
+### Load Test — Shapes
+
+| Shape | Users | Duration | Purpose |
+|---|---|---|---|
+| `BaselineShape` | 10 steady | 2 min | Confirm all endpoints healthy before ramping |
+| `StressShape` | 0 → 50 ramp | 8 min total | Find saturation point; identify bottleneck component |
+
+```bash
+# Install
+pip install locust
+
+# Baseline (headless, produces HTML report)
+cd backend
+locust -f load_test/locustfile.py --host http://localhost:8000 \
+       --users 10 --spawn-rate 2 --run-time 2m \
+       --headless --html load_test/reports/baseline.html
+
+# Stress (headless)
+locust -f load_test/locustfile.py --host http://localhost:8000 \
+       --users 50 --spawn-rate 5 --run-time 8m \
+       --headless --html load_test/reports/stress.html
+
+# Interactive UI — open http://localhost:8089
+locust -f load_test/locustfile.py --host http://localhost:8000
+```
+
+### Adaptive-K Latency Impact
+
+| Query type | k used | Reranker input | Latency saving vs k=20 |
+|---|---|---|---|
+| Specific (error code) | 3 | 3 candidates | ~40% |
 | Typical | 10 | 6–10 candidates | ~15% |
-| Vague | 20 | 15–20 candidates | Baseline |
+| Vague / ambiguous | 20 | 15–20 candidates | Baseline |
 
 ---
 
@@ -1140,17 +1189,33 @@ User: "Storage upload failing on MediaServer01"
   ← "Fix 1 of 3 (verified 14× in KB): 1. Check disk quota..."
      [This didn't work, try next fix]  [Issue resolved]
 
-User clicks "This didn't work, try next fix"
-  → intent detected: NEXT_OPTION
+User: "ok this is not working"
+  → intent classifier: OFFER_CHOICE  (bare failure, no detail)
+  ← "Sorry, Fix 1 didn't do it. Want me to help dig into why it's
+     not working? Tell me what happened — any error or where it got
+     stuck — or tap [This didn't work, try next fix]."
+     [This didn't work, try next fix]  [Issue resolved]
+
+User: "I ran the archive script but it only freed 200 GB and
+       uploads are still failing"
+  → intent classifier: TROUBLESHOOT  (failure + detail)
+  ← Engages on Fix 1: suggests checking disk quota config,
+     /var/log space, asks if error was 'no space left on device'
+     Index does NOT advance.
+
+User clicks [This didn't work, try next fix]
+  → intent: ADVANCE (explicit button)
   ← "Fix 2 of 3 (verified 6× in KB): 1. Enable log rotation..."
 
-User: "What does step 2 mean exactly?"
-  → intent detected: QUESTION  (> 40 chars, no keyword match)
-  ← GPT-4o-mini answers in context — index does NOT advance
+User: "that worked, thanks"
+  → intent classifier: RESOLVED
+  ← "Great — glad that resolved your incident!"
 
-User: "That didn't help either"
-  → index 2 → advance to 3 → 3 >= len(options) → _escalate()
-  ← "Escalated · Ticket: TKT-A1B2C3D4"  (OPEN, IT-OPS queue)
+─── OR — all options exhausted ────────────────────────────────
+
+  → index >= len(options) → _escalate()
+  ← "Escalated · Ticket: ESC-A1B2C3D4  (OPEN, IT-OPS queue)"
+     Full conversation history included as specialist context.
 ```
 
 ### Session Management
