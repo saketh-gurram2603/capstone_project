@@ -260,6 +260,8 @@ def _build_incident_response(candidate: dict) -> dict:
         "assigned_to":      payload.get("assigned_to") or None,
         "similarity_score": round(max(0.0, min(1.0, similarity)), 4),
         "occurrence_count": 1,
+        "resolution_hours": float(payload.get("resolution_hours") or 0.0),
+        "resolved_at":      payload.get("resolved_at") or None,
     }
 
 

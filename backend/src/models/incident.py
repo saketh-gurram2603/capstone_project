@@ -67,4 +67,6 @@ class IncidentResponse(BaseModel):
     resolution_notes: Optional[str] = Field(None, description="Resolution steps")
     assigned_to: Optional[str] = Field(None, description="Assigned asset or team")
     similarity_score: float = Field(..., ge=0.0, le=1.0, description="Reranked similarity score")
-    occurrence_count: int = Field(default=1, description="Times this resolution pattern appeared")
+    occurrence_count: int   = Field(default=1, description="Times this resolution pattern appeared")
+    resolution_hours: float = Field(default=0.0, description="Typical hours to resolve this incident type")
+    resolved_at: Optional[str] = Field(None, description="ISO timestamp when incident was resolved")

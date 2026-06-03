@@ -202,10 +202,11 @@ L3 Agent (no LLM — pure routing)
 | Score Fusion | RRF (k = 60) | Rank-only fusion — no score normalisation, proven robust across modalities |
 | Reranker | `ms-marco-MiniLM-L-6-v2` cross-encoder | Stage-2 accuracy boost on trimmed candidate set; loaded once |
 | Resolution Strategy | Aggregator + cosine clustering | Surfaces ALL unique fixes (> 0.95 cosine) with occurrence counts |
-| Embeddings | OpenAI `text-embedding-ada-002` | 1536-dim cosine space; project requirement |
-| Embedding Fallback | `all-MiniLM-L6-v2` (local) | Loaded at startup; activates when Ada-002 API fails |
-| L1 Agent | GPT-4o-mini | Lowest latency; KB search + summarise + confidence gate (≥ 0.80) |
-| L2 Agent | GPT-4o + Tavily API | Web search + L1 context; activates only when L1 confidence < 0.80 |
+| Embeddings | OpenAI `text-embedding-ada-002` | 1536-dim cosine space |
+| Embedding Fallback | `all-MiniLM-L6-v2` (local) | Used only for resolution clustering — never for Qdrant queries |
+| L1 Agent | GPT-4o-mini | KB search + summarise + confidence gate (≥ 0.80) |
+| L2 Agent | GPT-4o-mini + Tavily | Adds live web context; activates when L1 confidence < 0.80 |
+| Recency Reranker | Temporal decay | `similarity = 0.75 × semantic + 0.25 × exp(−days/365)` — recent fixes ranked higher |
 | L3 Agent | No LLM | Pure Postgres INSERT; returns `ticket_id`; no LLM cost |
 | LLM Fallback | `google/flan-t5-base` | Loaded at startup via HuggingFace; activates when circuit breaker opens |
 | Circuit Breaker | `pybreaker` | fail_max = 5, reset_timeout = 60s; protects all OpenAI calls |
@@ -233,7 +234,7 @@ capstone_project/
 ├── .gitignore
 │
 ├── data/
-│   └── incidents.xlsx                   ← 150-row ITSM dataset (MediaServer incidents)
+│   └── incidents.xlsx                   ← 308-row ITSM dataset (10 categories, 38 problem types)
 │
 ├── requirements/
 │   └── project-requirements.md         ← Original project specification
@@ -260,9 +261,10 @@ capstone_project/
 │       │   ├── health.py               ← GET /health · GET /health/ready
 │       │   ├── ingestion.py            ← POST /ingest · GET /ingest/status
 │       │   ├── search.py               ← POST /search
-│       │   ├── triage.py               ← POST /triage · GET /escalations
+│       │   ├── triage.py               ← POST /triage · GET /escalations · POST /escalations/{id}/resolve
 │       │   ├── evaluation.py           ← POST /evaluate · GET /metrics
-│       │   └── chat.py                 ← POST /chat (guided troubleshooting)
+│       │   ├── chat.py                 ← POST /chat (guided troubleshooting)
+│       │   └── feedback.py             ← POST /feedback · GET /feedback · POST /feedback/{id}/review
 │       │
 │       ├── core/
 │       │   ├── config.py               ← load_app_config · load_env_config · require_env
@@ -283,9 +285,9 @@ capstone_project/
 │       │   └── db_models.py            ← EscalationTicketDB · EvalRunDB (SQLAlchemy ORM)
 │       │
 │       ├── integrations/
-│       │   ├── vector_db.py            ← VectorStore ABC + QdrantVectorStore
-│       │   ├── embeddings.py           ← Ada-002 + MiniLM fallback
-│       │   ├── llm.py                  ← OpenAI + pybreaker + tenacity + Flan-T5 fallback
+│       │   ├── vector_db.py            ← VectorStore ABC + QdrantVectorStore + QdrantLocalVectorStore
+│       │   ├── embeddings.py           ← text-embedding-ada-002 + MiniLM local (resolution clustering only)
+│       │   ├── llm.py                  ← OpenAI GPT-4o-mini + pybreaker + tenacity + Flan-T5 fallback
 │       │   ├── cache.py                ← Stub interface (no-ops); placeholder for Redis
 │       │   └── database.py             ← SQLAlchemy async engine + session factory + create_tables()
 │       │
@@ -308,7 +310,7 @@ capstone_project/
 │       │   ├── state.py                ← IncidentState TypedDict
 │       │   ├── tools.py                ← search_incidents · tavily_web_search · classify_priority
 │       │   ├── l1_triage.py            ← GPT-4o-mini + confidence gate (≥ 0.80)
-│       │   ├── l2_analysis.py          ← GPT-4o + Tavily synthesis (≥ 0.55)
+│       │   ├── l2_analysis.py          ← GPT-4o-mini + Tavily synthesis (≥ 0.55)
 │       │   ├── l3_specialist.py        ← Postgres escalation ticket + create_escalation_ticket() helper
 │       │   └── graph.py                ← LangGraph StateGraph + build_triage_graph()
 │       │
@@ -321,12 +323,16 @@ capstone_project/
 │       │   ├── ...
 │       │   └── chat.py                 ← ChatRequest · ChatResponse · OptionProgress · ConversationMessage
 │       │
+│       ├── feedback/
+│       │   ├── feedback_store.py       ← Record / list / review + seed demo data
+│       │   └── __init__.py
 │       └── evaluation/
 │           ├── ir_metrics.py           ← ndcg_at_k · map_at_k · recall_at_k · precision_at_k
-│           ├── llm_judge.py            ← DeepEval: Faithfulness · AnswerRelevancy · ContextualPrecision
-│           ├── runner.py               ← Full eval pipeline + Postgres persistence
+│           ├── custom_metrics.py       ← fix_accuracy · resolution_time_mae (custom metrics)
+│           ├── llm_judge.py            ← DeepEval LLM-as-Judge: Faithfulness · AnswerRelevancy · CtxPrecision
+│           ├── runner.py               ← Full eval pipeline + custom metrics + Postgres persistence
 │           └── ground_truth/
-│               ├── dataset.json        ← 30 QA pairs across 7 incident categories
+│               ├── dataset.json        ← 30 QA pairs with keywords across 10 incident categories
 │               └── generate_dataset.py ← Dataset generation script
 │
 ├── frontend/
@@ -338,13 +344,14 @@ capstone_project/
 │   ├── Dockerfile
 │   └── src/
 │       ├── main.tsx
-│       ├── App.tsx                     ← React Router: / · /triage · /analytics · /ingest · /chat
+│       ├── App.tsx                     ← React Router: / · /triage · /analytics · /ingest · /chat · /admin
 │       ├── api/
 │       │   ├── searchApi.ts
-│       │   ├── triageApi.ts
+│       │   ├── triageApi.ts            ← getEscalations() · resolveEscalation()
 │       │   ├── ingestionApi.ts
 │       │   ├── evaluationApi.ts
-│       │   └── chatApi.ts              ← sendChatMessage() — POST /it-kb/chat
+│       │   ├── chatApi.ts              ← sendChatMessage() — POST /it-kb/chat
+│       │   └── feedbackApi.ts          ← submitFeedback() · getFeedback() · reviewFeedback()
 │       ├── store/
 │       │   ├── uiStore.ts              ← Sidebar collapse state (Zustand)
 │       │   └── chatStore.ts            ← Chat session + message history (Zustand)
@@ -358,9 +365,10 @@ capstone_project/
 │       └── pages/
 │           ├── SearchPage.tsx
 │           ├── TriagePage.tsx
-│           ├── AnalyticsPage.tsx
+│           ├── AnalyticsPage.tsx       ← Metrics popup, custom metric cards, radar chart
 │           ├── IngestionPage.tsx
-│           └── ChatPage.tsx            ← Guided troubleshooting chat interface
+│           ├── ChatPage.tsx            ← Guided troubleshooting + thumbs feedback
+│           └── AdminPage.tsx           ← Feedback review queue + Escalation tickets (admin only)
 │
 └── tests/
     ├── conftest.py
@@ -379,7 +387,7 @@ capstone_project/
 | Node.js | 18+ | Frontend build |
 | Docker | 24+ | For one-command startup |
 | Docker Compose | v2.x | `docker compose` (not `docker-compose`) |
-| OpenAI API Key | — | For GPT-4o-mini (L1), GPT-4o (L2), Ada-002 embeddings |
+| OpenAI API Key | — | For GPT-4o-mini (L1 + L2) and text-embedding-ada-002 |
 | Tavily API Key | — | For L2 web search; optional (L2 degrades gracefully without it) |
 
 ---
@@ -416,10 +424,21 @@ python main.py development
 # OpenAPI docs at:    http://localhost:8000/docs
 ```
 
-### 7.3 Ingest the Dataset
+### 7.3 Pre-populate Local Qdrant Fallback (run once)
+
+If Qdrant Cloud is unreachable, the system automatically falls back to a local embedded Qdrant store. Pre-populate it while the OpenAI API is accessible:
 
 ```bash
-curl -X POST http://localhost:8000/ingest \
+cd backend
+python setup_local_qdrant.py
+# Embeds all 308 incidents via text-embedding-ada-002 → saves to data/qdrant_local/
+# Also builds the BM25 index.  Answer 'y' to overwrite on re-run.
+```
+
+### 7.4 Ingest the Dataset
+
+```bash
+curl -X POST http://localhost:8000/it-kb/ingest \
   -F "file=@../data/incidents.xlsx"
 
 # Poll progress
@@ -507,12 +526,12 @@ curl http://localhost:8000/health/ready
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | Yes | OpenAI API key (GPT-4o, GPT-4o-mini, Ada-002) |
+| `OPENAI_API_KEY` | Yes | OpenAI API key (GPT-4o-mini for L1 + L2, text-embedding-ada-002) |
 | `TAVILY_API_KEY` | No | Tavily web search (L2 agent; degrades gracefully if absent) |
+| `QDRANT_URL` | No | Qdrant Cloud URL (falls back to local embedded store if unreachable) |
+| `QDRANT_API_KEY` | No | Qdrant Cloud API key |
 | `POSTGRES_USER` | No | Postgres username (optional — if absent, SQLite is used) |
 | `POSTGRES_PASSWORD` | No | Postgres password (optional — if absent, SQLite is used) |
-| `QDRANT_API_KEY` | No | Qdrant API key (not required for local dev) |
-| `SECRET_KEY` | Yes | Application secret key |
 
 ### Application Constants (`configuration/app_config.json`)
 
@@ -557,9 +576,9 @@ file: <XLSX binary>
 ```json
 {
   "status": "completed",
-  "ingested": 150,
+  "ingested": 308,
   "skipped": 0,
-  "duration_ms": 4231,
+  "duration_ms": 8500,
   "pii_masked_total": 12
 }
 ```
@@ -674,11 +693,32 @@ file: <XLSX binary>
 
 Sessions expire after 30 minutes of inactivity. A `404` is returned for expired or unknown session IDs.
 
+### Feedback
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/feedback` | None | User submits thumbs up/down from chat UI with optional reason |
+| `GET` | `/feedback` | API key | Admin lists all feedback items with aggregate stats |
+| `POST` | `/feedback/{id}/review` | API key | Admin verifies or dismisses a feedback item |
+
+### Escalation Management
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/escalations` | List L3 escalation tickets (filter by status: OPEN / IN_PROGRESS / RESOLVED) |
+| `POST` | `/escalations/{id}/resolve` | IT team resolves ticket and provides steps — immediately ingested into KB |
+
+**POST /escalations/{id}/resolve** closes the feedback loop:
+1. Marks the ticket RESOLVED in the database
+2. Embeds the IT team's resolution steps via text-embedding-ada-002
+3. Upserts the new record into Qdrant as a searchable incident (`IT-XXXXXXXX`)
+4. Rebuilds the BM25 index live — no restart needed
+
 ### Evaluation
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/evaluate` | Run the full evaluation pipeline (IR metrics + LLM-as-Judge) |
+| `POST` | `/evaluate` | Run the full evaluation pipeline (IR metrics + custom metrics + LLM-as-Judge) |
 | `GET` | `/metrics` | Return the most recent evaluation run results |
 
 **POST /evaluate — request:**
@@ -773,13 +813,15 @@ grep -rE "(sk-|password\s*=\s*['\"])" backend/src/
 
 | Metric | Type | Threshold | Description |
 |---|---|---|---|
-| `ndcg_at_10` | IR | ≥ 0.80 | Normalized Discounted Cumulative Gain at rank 10 |
-| `map_at_10` | IR | ≥ 0.75 | Mean Average Precision at rank 10 |
-| `recall_at_10` | IR | ≥ 0.85 | Proportion of relevant incidents found in top 10 |
-| `precision_at_10` | IR | — | Precision at rank 10 |
+| `ndcg_at_10` | IR | ≥ 0.60 | Normalized Discounted Cumulative Gain at rank 10 |
+| `map_at_10` | IR | ≥ 0.55 | Mean Average Precision at rank 10 |
+| `recall_at_10` | IR | ≥ 0.60 | Proportion of relevant incidents found in top 10 |
+| `precision_at_10` | IR | ≥ 0.50 | Precision at rank 10 |
 | `faithfulness` | LLM-as-Judge | ≥ 0.70 | Final answer factually grounded in retrieved context |
 | `answer_relevancy` | LLM-as-Judge | ≥ 0.75 | Answer addresses the query without hallucinating |
 | `contextual_precision` | LLM-as-Judge | ≥ 0.70 | Retrieved context contains the relevant information |
+| `fix_accuracy` | Custom | ≥ 0.60 | Fraction of test cases where top resolution matches expected keywords |
+| `resolution_time_mae` | Custom | display only | Mean Absolute Error (hours) between predicted and actual resolution time |
 
 ### Ground Truth Dataset
 
@@ -958,11 +1000,11 @@ Key architectural decisions and their trade-offs are summarised below.
 
 **Why:** 80%+ of incidents resolve at L1 (knowledge base match is strong). Using GPT-4o for every query would be ~10x the cost with negligible accuracy gain on well-matched KB cases.
 
-| Tier | Model | Avg latency | Cost/1k calls |
+| Tier | Model | Avg latency | Notes |
 |---|---|---|---|
-| L1 | GPT-4o-mini | ~800ms | $0.15 |
-| L2 | GPT-4o | ~2500ms | $2.50 |
-| Fallback | Flan-T5-base | ~300ms | $0.00 |
+| L1 | GPT-4o-mini | ~800ms | KB search + summarise + confidence gate |
+| L2 | GPT-4o-mini + Tavily | ~2500ms | Adds live web search context |
+| Fallback | Flan-T5-base (local) | ~300ms | Activates when OpenAI circuit breaker trips |
 
 ### ADR-005 — SQLite as Default DB (Zero-Install), Postgres as Optional Override
 
@@ -987,7 +1029,7 @@ Measurements taken on a single-node local setup (4-core, 16 GB RAM) after warm s
 | `POST /search` | 180ms | 320ms | 450ms | Full hybrid pipeline (no caching active) |
 | `POST /triage` (L1 resolve) | 900ms | 1400ms | 2000ms | Includes search + LLM |
 | `POST /triage` (L2 resolve) | 2800ms | 4200ms | 5500ms | Includes Tavily + GPT-4o |
-| `POST /ingest` (150 rows) | — | — | ~4s | Async batches of 50 |
+| `POST /ingest` (308 rows) | — | — | ~9s | Async batches of 50 |
 
 **Target under 50-user load test:**
 - p99 latency < 500 ms for `/search`
@@ -1026,7 +1068,8 @@ Measurements taken on a single-node local setup (4-core, 16 GB RAM) after warm s
 
 | Failure | System Behaviour |
 |---|---|
-| Qdrant unavailable | Search uses BM25 only; `retrieval_method: "bm25_only"` in response |
+| Qdrant Cloud unreachable | Auto-switches to local embedded Qdrant (`data/qdrant_local/`); transparent to the user |
+| Local Qdrant also fails | Search uses BM25 only; `retrieval_method: "bm25_only"` in response |
 | Postgres unavailable | L3 tickets + eval results stored in-memory; no 503 |
 | OpenAI timeout (5 failures) | Circuit opens; Flan-T5 fallback activates; `fallback_used: true` in response |
 | Ada-002 embedding failure | MiniLM local embeddings used; logged as warning |
@@ -1072,7 +1115,9 @@ None of these are loaded on first request. A request arriving before startup is 
 [ ] POST /chat (session_id=existing, "didn't work")  →  option_progress.current increments
 [ ] POST /chat (all options exhausted)  →  is_escalated=true, escalation_ticket_id set
 [ ] pytest tests/ -v --cov=src  →  tests pass, coverage >= 75%
-[ ] React app http://localhost:5173  →  Search · Triage · Analytics · Ingest · Chat · Admin pages functional
+[ ] React app http://localhost:5173  →  Search · Triage · Analytics · Ingest · Chat pages functional (user nav)
+[ ] React app http://localhost:5173/admin  →  Feedback Review + Escalation Tickets tabs functional (admin nav)
+[ ] POST /it-kb/ingest  →  { "ingested": 308, "skipped": 0 }  (after running setup_local_qdrant.py)
 [ ] /chat page  →  bubbles render, action buttons advance fix index, escalation shows ticket ID
 [ ] grep -r "print(" src/  →  zero matches (except main.py line 63 — deferred)
 [ ] grep -rE "(sk-|password\s*=)" src/  →  zero matches

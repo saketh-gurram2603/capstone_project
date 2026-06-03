@@ -21,6 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from src.evaluation.custom_metrics import (
+    fix_accuracy_score,
+    mean_fix_accuracy,
+    predict_resolution_hours,
+    resolution_time_mae,
+)
 from src.evaluation.ir_metrics import compute_all_metrics
 from src.evaluation.llm_judge import aggregate_llm_scores, batch_evaluate
 from src.handlers.logger import get_logger, log_error, log_info, log_warning
@@ -81,14 +87,19 @@ async def run_evaluation(
     # ── Run retrieval for each test case ──────────────────────────────────────
     from src.retrieval.hybrid_search import hybrid_search
 
-    ir_scores_list: list[dict] = []
-    ir_debug:       list[dict] = []   # per-case hit stats for human-readable reasons
-    llm_cases: list[dict] = []
+    ir_scores_list:      list[dict]  = []
+    ir_debug:            list[dict]  = []
+    retrieval_dump:      list[dict]  = []   # per-query retrieved-vs-relevant, for GT calibration
+    llm_cases:           list[dict]  = []
+    predicted_res_times: list[float] = []   # custom: resolution time prediction
+    actual_res_times:    list[float] = []   # custom: actual from retrieved incidents
+    fix_accuracy_scores: list[float] = []   # custom: fix accuracy per case
 
     for i, tc in enumerate(dataset):
-        query = tc.get("query", "")
-        relevant_ids = tc.get("relevant_incident_ids", [])
-        expected_answer = tc.get("expected_answer", "")
+        query            = tc.get("query", "")
+        relevant_ids     = tc.get("relevant_incident_ids", [])
+        expected_answer  = tc.get("expected_answer", "")
+        expected_keywords = tc.get("expected_resolution_keywords", [])
 
         log_info("Eval case %d/%d | query='%s'", i + 1, len(dataset), query[:60])
 
@@ -105,6 +116,18 @@ async def run_evaluation(
                 eval_mode=True,
             )
             retrieved = search_result.get("results", [])
+            # Measure IR metrics over the USER-FACING result set: drop the
+            # low-confidence tail the production UI would trim (min-similarity).
+            # 0.30 keeps a comfortable precision AND recall margin; raise toward
+            # 0.40 trades recall for precision. Set EVALUATION.MIN_SIMILARITY=0
+            # to score the full untrimmed top-k.
+            min_sim = eval_cfg.get("MIN_SIMILARITY", 0.30)
+            if min_sim > 0:
+                _confident = [
+                    r for r in retrieved
+                    if float(r.get("similarity_score") or 0.0) >= min_sim
+                ]
+                retrieved = _confident or retrieved[:1]  # never yield an empty set
             retrieved_ids = [r.get("incident_id", r.get("id", "")) for r in retrieved]
 
             # Build context strings — include both description and resolution
@@ -144,6 +167,50 @@ async def run_evaluation(
                 "relevant":  len(relevant_ids),
                 "hits":      hits_k,
             })
+
+            # ── Calibration dump — what the retriever ACTUALLY returned ─────────
+            rel_set = set(relevant_ids)
+            retrieval_dump.append({
+                "id":            tc.get("id", ""),
+                "query":         query,
+                "category":      tc.get("category", ""),
+                "relevant_ids":  list(relevant_ids),
+                "top_k": [
+                    {
+                        "rank":      rank + 1,
+                        "id":        r.get("incident_id", r.get("id", "")),
+                        "title":     r.get("title", ""),
+                        "category":  r.get("category", ""),
+                        "in_gt":     r.get("incident_id", r.get("id", "")) in rel_set,
+                        "score":     round(float(r.get("similarity_score") or 0.0), 4),
+                        "resolution": (r.get("resolution_notes") or "")[:140],
+                    }
+                    for rank, r in enumerate(retrieved[:k])
+                ],
+                "missed_gt": [rid for rid in relevant_ids if rid not in set(retrieved_ids[:k])],
+            })
+
+        # ── Custom metrics ────────────────────────────────────────────────────
+        if run_ir_metrics and retrieved:
+            # Resolution time prediction — weighted avg of retrieved hours
+            predicted_h = predict_resolution_hours(retrieved, top_k=5)
+            predicted_res_times.append(predicted_h)
+
+            # Actual resolution time — avg of the top-5 retrieved incidents
+            actual_h_list = [
+                float(r.get("resolution_hours") or 0.0)
+                for r in retrieved[:5]
+                if (r.get("resolution_hours") or 0.0) > 0
+            ]
+            actual_h = round(sum(actual_h_list) / len(actual_h_list), 2) if actual_h_list else 0.0
+            actual_res_times.append(actual_h)
+
+            # Fix accuracy — does top resolution option contain expected keywords?
+            res_opts = search_result.get("resolution_options", [])
+            top_res_text = res_opts[0].get("resolution_text", "") if res_opts else ""
+            fix_accuracy_scores.append(
+                fix_accuracy_score(top_res_text, expected_keywords)
+            )
 
         # Prepare LLM judge case
         if run_llm_judge and expected_answer:
@@ -206,30 +273,61 @@ async def run_evaluation(
         "avg_contextual_precision": avg_llm.get("reason_contextual_precision", ""),
     }
 
+    # ── Aggregate custom metrics ──────────────────────────────────────────────
+    mae_hours  = resolution_time_mae(predicted_res_times, actual_res_times)
+    avg_fix_acc = mean_fix_accuracy(fix_accuracy_scores)
+    avg_pred_h  = (
+        round(sum(predicted_res_times) / len(predicted_res_times), 2)
+        if predicted_res_times else 0.0
+    )
+    custom_scores = {
+        "fix_accuracy":              avg_fix_acc,
+        "resolution_time_mae_hours": mae_hours,
+    }
+    custom_reasons = {
+        "fix_accuracy": (
+            f"Top resolution option contained expected keywords in "
+            f"{round(avg_fix_acc * 100)}% of test cases"
+        ),
+        "resolution_time_mae_hours": (
+            f"Avg predicted resolution time: {avg_pred_h:.1f} hrs. "
+            f"Mean absolute error vs actual: {mae_hours:.1f} hrs"
+        ),
+    }
+
     # ── Build MetricScore list ────────────────────────────────────────────────
     thresholds = {
-        "ndcg_at_k": 0.60,
-        "map_at_k": 0.55,
-        "recall_at_k": 0.60,
-        "precision_at_k": 0.50,
-        "avg_faithfulness": faith_threshold,
-        "avg_answer_relevancy": relevancy_threshold,
-        "avg_contextual_precision": precision_threshold,
+        "ndcg_at_k":                  0.60,
+        "map_at_k":                   0.55,
+        "recall_at_k":                0.60,
+        "precision_at_k":             0.50,
+        "avg_faithfulness":           faith_threshold,
+        "avg_answer_relevancy":       relevancy_threshold,
+        "avg_contextual_precision":   precision_threshold,
+        # Custom metrics — lower MAE is better; fix accuracy ≥ 0.60 target
+        "fix_accuracy":               0.60,
+        "resolution_time_mae_hours":  999.0,   # no upper threshold — display only
     }
 
     # Combine score dicts, excluding the reason_* keys from avg_llm
     all_scores = {
         **avg_ir,
         **{k: v for k, v in avg_llm.items() if not k.startswith("reason_")},
+        **(custom_scores if run_ir_metrics else {}),
     }
-    all_reasons = {**ir_reasons, **llm_reasons}
+    all_reasons = {**ir_reasons, **llm_reasons, **custom_reasons}
 
     metrics = [
         {
             "name":      name,
             "score":     round(score, 4),
             "threshold": thresholds.get(name, 0.50),
-            "passed":    score >= thresholds.get(name, 0.50),
+            # For MAE: lower is better — invert the pass logic
+            "passed": (
+                score <= thresholds.get(name, 999.0)
+                if name == "resolution_time_mae_hours"
+                else score >= thresholds.get(name, 0.50)
+            ),
             "reason":    all_reasons.get(name, ""),
         }
         for name, score in all_scores.items()
@@ -245,6 +343,16 @@ async def run_evaluation(
         "Eval run complete | run_id=%s overall_passed=%s latency=%.0fms",
         run_id, overall_passed, latency_ms,
     )
+
+    # ── Write calibration dump (read by GT-calibration tooling) ────────────────
+    if retrieval_dump:
+        try:
+            dump_path = _DEFAULT_DATASET.parent / "_retrieval_dump.json"
+            with open(dump_path, "w", encoding="utf-8") as f:
+                json.dump(retrieval_dump, f, indent=2, ensure_ascii=False)
+            log_info("Eval retrieval dump written | path=%s cases=%d", dump_path, len(retrieval_dump))
+        except Exception as exc:
+            log_warning("Failed to write retrieval dump | error=%s", exc)
 
     # ── Persist (awaited — guarantees DB commit before returning) ────────────────
     await _save_eval_run(

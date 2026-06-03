@@ -20,7 +20,7 @@ from rank_bm25 import BM25Okapi
 
 from src.exceptions.custom_exceptions import IndexNotFoundError
 from src.handlers.logger import get_logger, log_info, log_warning
-from src.ingestion.bm25_builder import load_bm25_index, tokenize
+from src.ingestion.bm25_builder import load_bm25_index, save_bm25_index, tokenize
 
 logger = get_logger("retrieval.bm25_retriever")
 
@@ -125,3 +125,52 @@ def bm25_search(query: str, top_k: int) -> list[dict]:
 def is_bm25_loaded() -> bool:
     """Return True if the BM25 index has been loaded."""
     return _retriever.is_loaded
+
+
+def add_document_to_bm25(
+    incident_id: str,
+    search_text: str,
+    payload: dict,
+    index_dir: str = "data",
+) -> None:
+    """
+    Add a single new document to the live BM25 index without restarting.
+
+    Steps:
+      1. Append the raw search_text and incident_id to the in-memory corpus.
+      2. Rebuild BM25Okapi from the full updated corpus (fast for < 1000 docs).
+      3. Register the payload in _payload_map so BM25 hits get enriched.
+      4. Save the updated pickle to disk so the next server restart picks it up.
+
+    Called after an IT team member resolves an escalation ticket and provides
+    resolution steps — those steps are immediately searchable.
+    """
+    if not _retriever.is_loaded:
+        log_warning("BM25 index not loaded — skipping live update for %s", incident_id)
+        return
+
+    # 1. Append to in-memory corpus
+    _retriever._corpus.append(search_text)
+    _retriever._ids.append(incident_id)
+
+    # 2. Rebuild index
+    tokenized = [tokenize(t) for t in _retriever._corpus]
+    _retriever._index = BM25Okapi(tokenized)
+
+    # 3. Register payload
+    _payload_map[incident_id] = payload
+
+    # 4. Persist to disk
+    try:
+        save_bm25_index(
+            _retriever._index,
+            _retriever._corpus,
+            _retriever._ids,
+            index_dir=index_dir,
+        )
+        log_info(
+            "BM25 updated live | new_doc=%s total_docs=%d",
+            incident_id, len(_retriever._ids),
+        )
+    except Exception as exc:
+        log_warning("BM25 pickle save failed after live update | error=%s", exc)

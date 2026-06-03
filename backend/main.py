@@ -37,7 +37,7 @@ from src.handlers.logger import init_loggers, log_info, log_warning, log_error
 from src.exceptions.exception_handler import register_exception_handlers
 
 # ── Integrations ──────────────────────────────────────────────────────────────
-from src.integrations.vector_db import QdrantVectorStore
+from src.integrations.vector_db import QdrantLocalVectorStore, QdrantVectorStore
 from src.integrations.embeddings import init_embeddings
 from src.integrations.llm import init_llm
 from src.integrations.database import init_database, init_sqlite, create_tables
@@ -94,36 +94,92 @@ async def lifespan(app: FastAPI):
     """Startup: initialise all services. Shutdown: clean up."""
     log_info("Lifespan startup — initialising services ...")
 
-    # ── Vector Store (Qdrant) ─────────────────────────────────────────────────
-    # QDRANT_URL env var takes precedence over config.json (supports cloud override)
-    qdrant_url = get_env("QDRANT_URL") or env_config["qdrant_url"]
-    log_info("Connecting to Qdrant | url=%s", qdrant_url)
-    vector_store = QdrantVectorStore(
-        url=qdrant_url,
-        api_key=get_env("QDRANT_API_KEY") or None,
-    )
-    # Wrapped in try/except so a temporarily unreachable Qdrant cluster
-    # (paused free-tier, network hiccup, cold-start timeout) does NOT crash
-    # the entire server.  The app starts in degraded mode; search/ingest
-    # endpoints return 503 until Qdrant is reachable again.  The health
-    # endpoint (/health/ready) will reflect qdrant=unavailable.
-    try:
-        await vector_store.create_collection(
-            collection=app_config["QDRANT"]["COLLECTION_NAME"],
-            vector_size=app_config["QDRANT"]["VECTOR_SIZE"],
-        )
-        log_info(
-            "Qdrant ready | collection=%s",
-            app_config["QDRANT"]["COLLECTION_NAME"],
-        )
-    except Exception as _qdrant_exc:
-        log_warning(
-            "Qdrant unreachable at startup — search/ingest unavailable until "
-            "the cluster responds.  Starting in degraded mode. | error=%s",
-            _qdrant_exc,
-        )
+    # ── Vector Store — Cloud first, local embedded fallback ───────────────────
+    #
+    # Priority:
+    #   1. Qdrant Cloud (QDRANT_URL) — tried with a 10-second timeout so a
+    #      blocked/unreachable cloud endpoint fails fast during demos.
+    #   2. Local embedded Qdrant (data/qdrant_local/) — zero network dependency.
+    #      Pre-populate once via:  python setup_local_qdrant.py
+    #
+    # BM25 runs alongside whichever vector store is active.
+    # ──────────────────────────────────────────────────────────────────────────
+    import asyncio as _asyncio
+
+    _collection   = app_config["QDRANT"]["COLLECTION_NAME"]
+    _vector_size  = app_config["QDRANT"]["VECTOR_SIZE"]
+    _qdrant_url   = get_env("QDRANT_URL") or env_config.get("qdrant_url", "")
+    _qdrant_key   = get_env("QDRANT_API_KEY") or None
+
+    vector_store = None
+
+    # ── 1. Try Qdrant Cloud ───────────────────────────────────────────────────
+    if _qdrant_url:
+        try:
+            _cloud = QdrantVectorStore(url=_qdrant_url, api_key=_qdrant_key)
+            await _asyncio.wait_for(
+                _cloud.create_collection(collection=_collection, vector_size=_vector_size),
+                timeout=10.0,
+            )
+            vector_store = _cloud
+            log_info("Qdrant Cloud connected | collection=%s", _collection)
+        except Exception as _cloud_exc:
+            log_warning(
+                "Qdrant Cloud unreachable (timeout or network block) — "
+                "switching to local embedded Qdrant | error=%s", _cloud_exc,
+            )
+
+    # ── 2. Local embedded fallback ────────────────────────────────────────────
+    if vector_store is None:
+        _local = QdrantLocalVectorStore(path="data/qdrant_local")
+        try:
+            await _local.create_collection(collection=_collection, vector_size=_vector_size)
+            vector_store = _local
+            log_info("Local embedded Qdrant active | collection=%s", _collection)
+        except Exception as _local_exc:
+            log_error(
+                "Both Cloud and local Qdrant failed — vector search unavailable. "
+                "Run setup_local_qdrant.py to initialise local store. | error=%s",
+                _local_exc,
+            )
+            # Keep the local store object so the app starts in degraded mode
+            vector_store = _local
+
     app.state.vector_store = vector_store
     integrations_pkg._qdrant_store = vector_store  # for health check
+
+    # ── Evaluation store — ALWAYS the local deduped index ─────────────────────
+    # DeepEval / IR metrics must be deterministic and run against the
+    # dedup-consistent local store (data/qdrant_local), regardless of whether
+    # the live app is on Qdrant Cloud. If the app is already on local, reuse
+    # that instance to avoid a second embedded-client file lock.
+    if isinstance(vector_store, QdrantLocalVectorStore):
+        eval_vector_store = vector_store
+    else:
+        try:
+            eval_vector_store = QdrantLocalVectorStore(path="data/qdrant_local")
+            await eval_vector_store.create_collection(
+                collection=_collection, vector_size=_vector_size
+            )
+        except Exception as _eval_exc:
+            log_warning(
+                "Eval local store unavailable — eval will fall back to the live store. "
+                "Run setup_local_qdrant.py to build it. | error=%s", _eval_exc,
+            )
+            eval_vector_store = vector_store
+    app.state.eval_vector_store = eval_vector_store
+
+    try:
+        _eval_docs = await eval_vector_store.count(_collection)
+        _eval_backend = "local" if isinstance(eval_vector_store, QdrantLocalVectorStore) else "cloud"
+        log_info(
+            "Evaluation store ready | backend=%s docs=%d%s",
+            _eval_backend, _eval_docs,
+            "  ⚠ looks NOT deduped (expected ~165) — re-run setup_local_qdrant.py"
+            if _eval_docs > 200 else "",
+        )
+    except Exception:
+        pass
 
     # ── Database (SQLite default; Postgres if POSTGRES_USER is set) ──────────
     # Import ORM models first so Base.metadata is populated before create_tables()

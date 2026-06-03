@@ -10,14 +10,18 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from src.agents.graph import run_triage, _final_confidence
-from src.agents.l3_specialist import list_escalation_tickets
+from src.agents.l3_specialist import list_escalation_tickets, resolve_ticket
+from src.core.dependencies import get_app_config, get_vector_store
 from src.handlers.logger import get_logger, log_info, log_warning
+from src.integrations.vector_db import VectorStore
 from src.models.triage import (
     EscalationListResponse,
     EscalationTicket,
+    ResolveTicketRequest,
+    ResolveTicketResponse,
     TriageRequest,
     TriageResult,
 )
@@ -125,3 +129,52 @@ async def get_escalations(
     ]
 
     return EscalationListResponse(total=len(tickets), tickets=tickets)
+
+
+@router.post(
+    "/escalations/{ticket_id}/resolve",
+    response_model=ResolveTicketResponse,
+    summary="Resolve an escalation ticket and ingest IT team's fix into the KB",
+)
+async def resolve_escalation(
+    ticket_id: str,
+    body: ResolveTicketRequest,
+    vector_store: VectorStore = Depends(get_vector_store),
+    app_config: dict = Depends(get_app_config),
+) -> ResolveTicketResponse:
+    """
+    Mark an L3 escalation ticket as RESOLVED and ingest the IT team's
+    resolution steps into the knowledge base as a new searchable incident record.
+
+    The new record is immediately available in both Qdrant (vector search)
+    and BM25 (keyword search) — no restart required.
+    """
+    log_info("POST /escalations/%s/resolve", ticket_id)
+
+    collection = app_config.get("QDRANT", {}).get("COLLECTION_NAME", "incidents")
+
+    try:
+        result = await resolve_ticket(
+            ticket_id=ticket_id,
+            resolution_steps=body.resolution_steps,
+            vector_store=vector_store,
+            collection=collection,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_warning("Resolve ticket failed | ticket_id=%s error=%s", ticket_id, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to resolve ticket: {exc}") from exc
+
+    return ResolveTicketResponse(
+        ticket_id=result["ticket_id"],
+        new_incident_id=result["new_incident_id"],
+        status=result["status"],
+        ingested_to_kb=result["ingested_to_kb"],
+        message=(
+            f"Ticket {ticket_id} resolved. "
+            + (f"Resolution ingested as {result['new_incident_id']} — now searchable in the KB."
+               if result["ingested_to_kb"]
+               else "Note: KB ingestion failed (check embedding service). Ticket is still marked RESOLVED.")
+        ),
+    )

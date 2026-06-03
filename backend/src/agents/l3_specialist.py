@@ -169,6 +169,136 @@ async def _write_ticket(
         log_warning("Postgres ticket write failed, in-memory only | ticket_id=%s error=%s", ticket_id, exc)
 
 
+async def resolve_ticket(
+    ticket_id: str,
+    resolution_steps: str,
+    vector_store,
+    collection: str,
+) -> dict:
+    """
+    Mark an escalation ticket RESOLVED and ingest the IT team's resolution
+    into the knowledge base (Qdrant + BM25) as a new searchable incident record.
+
+    Returns a dict with ticket_id, new_incident_id, and ingested_to_kb flag.
+    """
+    import hashlib
+
+    from src.handlers.logger import log_info, log_warning
+
+    log_info("Resolving ticket | ticket_id=%s", ticket_id)
+
+    # ── 1. Fetch ticket details ───────────────────────────────────────────────
+    all_tickets = await list_escalation_tickets(limit=1000)
+    ticket = next((t for t in all_tickets if t["ticket_id"] == ticket_id), None)
+    if ticket is None:
+        raise ValueError(f"Ticket not found: {ticket_id}")
+
+    description = ticket.get("description", "")
+
+    # ── 2. Mark RESOLVED in DB + memory ─────────────────────────────────────
+    await _update_ticket_status(ticket_id, "RESOLVED")
+
+    # ── 3. Generate a unique incident ID for the new KB record ──────────────
+    new_incident_id = f"IT-{uuid.uuid4().hex[:8].upper()}"
+    search_text = description
+
+    # ── 4. Ingest into Qdrant + BM25 ────────────────────────────────────────
+    ingested = False
+    try:
+        from src.integrations.embeddings import embed_text
+        from src.retrieval.bm25_retriever import add_document_to_bm25
+
+        vector = await embed_text(search_text)
+
+        # Compute actual resolution time from ticket timestamps
+        from datetime import datetime, timezone as _tz
+        now_iso   = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        opened_iso = ticket.get("created_at") or ""
+        res_hours  = 0.0
+        try:
+            if opened_iso:
+                opened_dt  = datetime.fromisoformat(opened_iso.replace("Z", "+00:00"))
+                res_hours  = round(
+                    (datetime.now(_tz.utc) - opened_dt).total_seconds() / 3600, 2
+                )
+        except Exception:
+            res_hours = 0.0
+
+        payload = {
+            "incident_id":      new_incident_id,
+            "ticket_id":        ticket_id,
+            "title":            description[:120],
+            "category":         "IT Resolution",
+            "description":      description,
+            "resolution_notes": resolution_steps,
+            "assigned_to":      "IT Operations",
+            "search_text":      search_text,
+            "impact":           ticket.get("impact")  or "",
+            "urgency":          ticket.get("urgency") or "",
+            "priority":         ticket.get("priority") or "",
+            "opened_at":        opened_iso,
+            "resolved_at":      now_iso,
+            "resolution_hours": res_hours,
+        }
+
+        # Stable Qdrant point ID from the new incident ID
+        qdrant_id = int(hashlib.sha1(new_incident_id.encode()).hexdigest()[:8], 16)
+        await vector_store.upsert(collection, [{
+            "id":      qdrant_id,
+            "vector":  vector,
+            "payload": payload,
+        }])
+        log_info("IT resolution upserted to Qdrant | incident_id=%s", new_incident_id)
+
+        # Live BM25 update — no restart needed
+        add_document_to_bm25(new_incident_id, search_text, payload)
+        ingested = True
+
+    except Exception as exc:
+        log_warning(
+            "KB ingestion failed for IT resolution | ticket=%s error=%s — "
+            "ticket is still marked RESOLVED", ticket_id, exc,
+        )
+
+    return {
+        "ticket_id":       ticket_id,
+        "new_incident_id": new_incident_id,
+        "status":          "RESOLVED",
+        "ingested_to_kb":  ingested,
+    }
+
+
+async def _update_ticket_status(ticket_id: str, status: str) -> None:
+    """Update ticket status in both the in-memory list and the DB."""
+    # In-memory update
+    for t in _tickets:
+        if t["ticket_id"] == ticket_id:
+            t["status"] = status
+            break
+
+    # DB update
+    try:
+        from src.models.db_models import EscalationTicketDB
+        from src.integrations.database import get_session
+        from sqlalchemy import select
+
+        async with get_session() as session:
+            stmt = select(EscalationTicketDB).where(
+                EscalationTicketDB.ticket_id == ticket_id
+            )
+            row = (await session.execute(stmt)).scalars().first()
+            if row:
+                row.status = status
+        log_info("Ticket status updated | ticket_id=%s status=%s", ticket_id, status)
+    except RuntimeError:
+        pass  # DB not initialised — in-memory only
+    except Exception as exc:
+        from src.handlers.logger import log_warning
+        log_warning(
+            "DB ticket status update failed | ticket_id=%s error=%s", ticket_id, exc
+        )
+
+
 async def list_escalation_tickets(
     status: str | None = None,
     limit: int = 50,

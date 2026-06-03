@@ -128,9 +128,10 @@ class QdrantVectorStore(VectorStore):
         """
         try:
             qdrant_filter = self._build_filter(filters) if filters else None
-            results = await self._client.search(
+            # qdrant-client 1.7+ replaced .search() with .query_points()
+            result = await self._client.query_points(
                 collection_name=collection,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
                 query_filter=qdrant_filter,
                 with_payload=True,
@@ -141,7 +142,7 @@ class QdrantVectorStore(VectorStore):
                     "score": float(r.score),
                     "payload": r.payload or {},
                 }
-                for r in results
+                for r in result.points
             ]
         except Exception as exc:
             log_error("Qdrant search failed | collection=%s | error=%s", collection, exc)
@@ -220,3 +221,128 @@ class QdrantVectorStore(VectorStore):
             if value is not None
         ]
         return Filter(must=conditions) if conditions else None
+
+
+# ── Local Embedded Qdrant (no server required) ────────────────────────────────
+
+class QdrantLocalVectorStore(VectorStore):
+    """
+    Local embedded Qdrant using the synchronous QdrantClient(path=).
+
+    AsyncQdrantClient(path=) does NOT expose a .search() method in
+    qdrant-client 1.13.x — only the synchronous client supports the full
+    local embedded API. All async methods delegate to the sync client via
+    run_in_executor() so the FastAPI event loop is never blocked.
+
+    Used as an automatic fallback when Qdrant Cloud is unreachable.
+    Pre-populate once via:  python setup_local_qdrant.py
+    """
+
+    def __init__(self, path: str = "data/qdrant_local") -> None:
+        import os
+        os.makedirs(path, exist_ok=True)
+        self._path = path
+        from qdrant_client import QdrantClient  # sync client — full local API
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            self._client = QdrantClient(path=path)
+        log_info("Local embedded Qdrant initialised | path=%s", path)
+
+    # ── Executor helper ───────────────────────────────────────────────────────
+
+    async def _run(self, fn, *args, **kwargs):
+        """Run a synchronous qdrant-client call in the thread-pool executor."""
+        import asyncio
+        import functools
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+    # ── VectorStore interface ─────────────────────────────────────────────────
+
+    async def upsert(self, collection: str, points: list[dict]) -> int:
+        qdrant_points = [
+            PointStruct(id=p["id"], vector=p["vector"], payload=p.get("payload", {}))
+            for p in points
+        ]
+        await self._run(self._client.upsert, collection_name=collection, points=qdrant_points)
+        log_info("Local Qdrant: upserted %d points to '%s'", len(points), collection)
+        return len(points)
+
+    async def search(
+        self,
+        collection: str,
+        query_vector: list[float],
+        top_k: int,
+        filters: Optional[dict] = None,
+    ) -> list[dict]:
+        qdrant_filter = QdrantVectorStore._build_filter(filters) if filters else None
+        # qdrant-client 1.7+ replaced .search() with .query_points()
+        result = await self._run(
+            self._client.query_points,
+            collection_name=collection,
+            query=query_vector,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            with_payload=True,
+        )
+        return [
+            {"id": str(r.id), "score": float(r.score), "payload": r.payload or {}}
+            for r in result.points
+        ]
+
+    async def collection_exists(self, collection: str) -> bool:
+        try:
+            cols = await self._run(self._client.get_collections)
+            return collection in [c.name for c in cols.collections]
+        except Exception:
+            return False
+
+    async def create_collection(self, collection: str, vector_size: int) -> None:
+        exists = await self.collection_exists(collection)
+        if not exists:
+            await self._run(
+                self._client.create_collection,
+                collection_name=collection,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+            )
+            log_info("Local Qdrant: created collection '%s' (dim=%d)", collection, vector_size)
+        else:
+            log_info("Local Qdrant: collection '%s' already exists", collection)
+
+    async def count(self, collection: str) -> int:
+        try:
+            result = await self._run(self._client.count, collection_name=collection, exact=True)
+            return result.count
+        except Exception:
+            return 0
+
+    async def scroll_all(self, collection: str) -> list[dict]:
+        all_points: list[dict] = []
+        offset = None
+        try:
+            while True:
+                results, next_offset = await self._run(
+                    self._client.scroll,
+                    collection_name=collection,
+                    limit=250,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for r in results:
+                    all_points.append({"id": str(r.id), "payload": r.payload or {}})
+                if next_offset is None:
+                    break
+                offset = next_offset
+        except Exception as exc:
+            log_error("Local Qdrant scroll_all failed | error=%s", exc)
+        return all_points
+
+    async def health_check(self) -> bool:
+        try:
+            await self._run(self._client.get_collections)
+            return True
+        except Exception as exc:
+            log_warning("Local Qdrant health check failed | error=%s", exc)
+            return False

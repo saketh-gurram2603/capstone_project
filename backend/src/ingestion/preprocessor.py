@@ -30,19 +30,42 @@ logger = get_logger("ingestion.preprocessor")
 
 # ── Column name constants (match the XLSX headers exactly) ────────────────────
 
-_COL_INCIDENT_ID = "Incident ID"
-_COL_TICKET_ID = "Ticket ID"
-_COL_ASSET = "Media Asset"
-_COL_CATEGORY = "Category"
-_COL_TITLE = "Incident Details"
-_COL_DESCRIPTION = "Description"
-_COL_SOLUTION = "Solution"
+_COL_INCIDENT_ID  = "Incident ID"
+_COL_TICKET_ID    = "Ticket ID"
+_COL_ASSET        = "Media Asset"
+_COL_CATEGORY     = "Category"
+_COL_TITLE        = "Incident Details"
+_COL_DESCRIPTION  = "Description"
+_COL_SOLUTION     = "Solution"
+_COL_OPENED_AT    = "Opened At"
+_COL_RESOLVED_AT  = "Resolved At"
+_COL_RES_HOURS    = "Resolution Hours"
 
 _REQUIRED_COLUMNS: set[str] = {
     _COL_INCIDENT_ID,
     _COL_DESCRIPTION,
     _COL_SOLUTION,
 }
+
+# ── Category-based resolution time lookup (fallback when columns absent) ──────
+_CATEGORY_RESOLUTION_HOURS: dict[str, tuple[float, float]] = {
+    "Storage":        (2.0,  8.0),
+    "Application":    (1.0,  6.0),
+    "Database":       (1.0,  4.0),
+    "Network":        (0.5,  3.0),
+    "Security":       (2.0, 12.0),
+    "Performance":    (1.0,  4.0),
+    "Hardware":       (4.0, 24.0),
+    "Authentication": (0.5,  2.0),
+    "Monitoring":     (0.5,  1.5),
+    "Configuration":  (0.5,  2.0),
+}
+
+
+def _derive_resolution_hours(category: str) -> float:
+    """Return the midpoint of the category's expected resolution range."""
+    lo, hi = _CATEGORY_RESOLUTION_HOURS.get(category, (1.0, 6.0))
+    return round((lo + hi) / 2.0, 2)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -296,20 +319,37 @@ def _process_row(
     search_text = build_search_text(title, description)
 
     # Derive impact/urgency/priority so metadata filtering is functional
-    # (the source dataset has no such columns).
     impact, urgency, priority = derive_severity(category, title, description)
 
+    # ── Timestamps ───────────────────────────────────────────────────────────
+    # Use columns from the XLSX if present; otherwise derive from category.
+    opened_at   = clean_text(row.get(_COL_OPENED_AT,  ""))
+    resolved_at = clean_text(row.get(_COL_RESOLVED_AT, ""))
+    try:
+        res_hours = float(row.get(_COL_RES_HOURS, 0) or 0)
+    except (ValueError, TypeError):
+        res_hours = 0.0
+
+    if not opened_at or not resolved_at or res_hours <= 0:
+        # Derive from category — fallback for uploads without timestamp columns
+        res_hours   = _derive_resolution_hours(category)
+        opened_at   = opened_at   or ""   # keep blank; recency irrelevant for derived
+        resolved_at = resolved_at or ""
+
     return {
-        "incident_id": incident_id,
-        "ticket_id": ticket_id,
-        "title": title,
-        "category": category,
-        "impact": impact,
-        "urgency": urgency,
-        "priority": priority,
-        "description": description,
+        "incident_id":      incident_id,
+        "ticket_id":        ticket_id,
+        "title":            title,
+        "category":         category,
+        "impact":           impact,
+        "urgency":          urgency,
+        "priority":         priority,
+        "description":      description,
         "resolution_notes": resolution_notes,
-        "assigned_to": asset,
-        "search_text": search_text,
+        "assigned_to":      asset,
+        "search_text":      search_text,
         "pii_masked_count": pii_masked_count,
+        "opened_at":        opened_at,
+        "resolved_at":      resolved_at,
+        "resolution_hours": res_hours,
     }

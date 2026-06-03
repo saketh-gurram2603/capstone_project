@@ -35,7 +35,12 @@ async def run_eval(request: Request, body: EvalRequest, _: None = Depends(requir
 
     Results are persisted to Postgres and returned immediately.
     """
-    vector_store = getattr(request.app.state, "vector_store", None)
+    # Evaluation runs against the LOCAL deduped store (set up in lifespan),
+    # falling back to the live store only if the local one is unavailable.
+    vector_store = (
+        getattr(request.app.state, "eval_vector_store", None)
+        or getattr(request.app.state, "vector_store", None)
+    )
     app_config = getattr(request.app.state, "app_config", {})
 
     if vector_store is None:
@@ -45,11 +50,19 @@ async def run_eval(request: Request, body: EvalRequest, _: None = Depends(requir
             detail="Vector store is not ready. Please retry after ingestion is complete.",
         )
 
+    from src.integrations.vector_db import QdrantLocalVectorStore
+    _collection = app_config.get("QDRANT", {}).get("COLLECTION_NAME", "incidents")
+    _backend = "local" if isinstance(vector_store, QdrantLocalVectorStore) else "cloud"
+    try:
+        _docs = await vector_store.count(_collection)
+    except Exception:
+        _docs = -1
     log_info(
-        "POST /evaluate | ir=%s llm_judge=%s dataset_path=%s",
-        body.run_ir_metrics,
-        body.run_llm_judge,
+        "POST /evaluate | backend=%s index_docs=%d ir=%s llm_judge=%s dataset_path=%s%s",
+        _backend, _docs, body.run_ir_metrics, body.run_llm_judge,
         body.dataset_path or "built-in",
+        "  ⚠ index NOT deduped (expected ~165) — IR scores will be unreliable"
+        if _docs > 200 else "",
     )
 
     try:

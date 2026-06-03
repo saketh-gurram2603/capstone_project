@@ -58,3 +58,10 @@ Thumbs.db
 # ── HuggingFace model cache (too large) ───────────────────────────────────────
 *.bin
 *.safetensors
+
+# ── Local embedded Qdrant store (runtime data, not source) ────────────────────
+data/qdrant_local/
+backend/data/qdrant_local/
+
+# ── Evaluation debug dumps (regenerated on every eval run) ────────────────────
+backend/src/evaluation/ground_truth/_retrieval_dump.json

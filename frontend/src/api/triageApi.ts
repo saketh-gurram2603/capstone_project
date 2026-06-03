@@ -54,6 +54,30 @@ export async function runTriage(payload: TriageRequest): Promise<TriageResult> {
   return res.json()
 }
 
+export interface ResolveTicketResponse {
+  ticket_id: string
+  new_incident_id: string
+  status: string
+  ingested_to_kb: boolean
+  message: string
+}
+
+export async function resolveEscalation(
+  ticketId: string,
+  resolutionSteps: string,
+): Promise<ResolveTicketResponse> {
+  const res = await fetch(`${BASE}/escalations/${ticketId}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resolution_steps: resolutionSteps }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? 'Failed to resolve ticket')
+  }
+  return res.json()
+}
+
 export async function getEscalations(
   status?: string,
   limit = 50,

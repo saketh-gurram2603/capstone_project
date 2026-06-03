@@ -1,12 +1,18 @@
 """
 ChatAgent — handles one guided troubleshooting turn.
 
+Intent is classified per turn by a small LLM call (gpt-4o-mini) into
+ADVANCE / RESOLVED / TROUBLESHOOT, with a deterministic fast-path for the
+UI action buttons.  The assistant NEVER auto-advances on "it didn't work":
+reporting difficulty keeps the user on the current fix and engages
+troubleshooting.  Moving to the next fix is always an explicit user choice.
+
 Flow:
-  new session  → hybrid_search() → format Option 1 as numbered steps
-  next fix     → advance current_index → format next option
+  new session   → hybrid_search() → format Option 1 as numbered steps
+  troubleshoot  → engage on the CURRENT fix, ask a follow-up (no index advance)
+  advance       → explicit "next fix" only → advance current_index
   all exhausted → create L3 escalation ticket
-  question     → freeform GPT-4o-mini answer with context (no index advance)
-  resolved     → confirmation message, session done
+  resolved      → confirmation message, session done
 """
 
 from __future__ import annotations
@@ -23,18 +29,27 @@ from src.retrieval.hybrid_search import hybrid_search
 
 logger = get_logger("chat.agent")
 
-# ── Intent keyword sets ───────────────────────────────────────────────────────
-_NEXT_KEYWORDS = frozenset([
-    "didn't work", "didnt work", "not working", "does not work", "doesn't work",
-    "failed", "still broken", "no luck", "try next", "next fix", "next option",
-    "not fixed", "still failing", "another", "else",
-])
-_RESOLVED_KEYWORDS = frozenset([
-    "worked", "it worked", "resolved", "fixed", "thank", "thanks",
-    "got it", "solved", "all good", "success", "done",
-])
+# ── Intent classification ─────────────────────────────────────────────────────
+# Free-text replies are classified by a small LLM call. Difficulty ("it's still
+# not working") must NOT advance — it routes to TROUBLESHOOT so the assistant
+# helps with the current fix. Only an explicit request advances.
+_INTENT_SYSTEM_PROMPT = (
+    "You classify a user's reply in a step-by-step IT troubleshooting chat. "
+    "The user was given ONE specific fix to try. Reply with EXACTLY one word:\n"
+    "ADVANCE — the user explicitly wants to stop this fix and try a different/next one "
+    "(e.g. 'skip this', 'what else can I try', 'give me the next one').\n"
+    "RESOLVED — the issue is now fixed/working (e.g. 'that worked', 'all good now').\n"
+    "HELP — the user wants help getting THIS fix to work: they ask a question, report a "
+    "specific error, or describe what happened / what they tried.\n"
+    "UNCLEAR — the user only says it failed or they're stuck, with NO error, NO question, "
+    "and NO details (e.g. 'this isn't working', 'nope', 'still broken', 'didn't help').\n"
+    "Output only one word: ADVANCE, RESOLVED, HELP, or UNCLEAR."
+)
 
-_SUGGESTED_ACTIONS = ["This didn't work, try next fix", "Issue resolved"]
+# Exact UI action-button strings — matched deterministically (no LLM call).
+_ACTION_NEXT = "This didn't work, try next fix"
+_ACTION_RESOLVED = "Issue resolved"
+_SUGGESTED_ACTIONS = [_ACTION_NEXT, _ACTION_RESOLVED]
 
 
 class ChatAgent:
@@ -124,7 +139,7 @@ class ChatAgent:
             ConversationMessage(role="user", content=message)
         )
 
-        intent = self._detect_intent(message)
+        intent = await self._classify_intent(session, message)
         log_info("Chat continuation | intent=%s session=%s", intent, session.session_id)
 
         if intent == "RESOLVED":
@@ -143,11 +158,15 @@ class ChatAgent:
                 suggested_actions=[],
             )
 
-        if intent == "QUESTION":
-            return await self._answer_question(session, message, session_manager)
+        if intent == "OFFER_CHOICE":
+            return await self._offer_choice(session, session_manager)
 
-        # NEXT_OPTION — advance to the next fix. Feedback (if any) comes
-        # explicitly from the thumbs UI, not from this button.
+        if intent == "TROUBLESHOOT":
+            return await self._troubleshoot(session, message, session_manager)
+
+        # NEXT_OPTION — advance to the next fix. Reached only on an explicit
+        # request (the action button or a clear "next/skip"), never on a bare
+        # "it didn't work". Feedback comes from the thumbs UI, not this button.
         next_index = session.current_index + 1
         if next_index >= len(session.resolution_options):
             return await self._escalate(
@@ -181,28 +200,58 @@ class ChatAgent:
 
     # ── Intent detection ──────────────────────────────────────────────────────
 
-    def _detect_intent(self, message: str) -> str:
+    async def _classify_intent(self, session: ChatSession, message: str) -> str:
         """
-        Returns NEXT_OPTION | RESOLVED | QUESTION.
+        Returns NEXT_OPTION | RESOLVED | TROUBLESHOOT | OFFER_CHOICE.
 
-        Rule-based keyword matching — fast and deterministic.
-        Falls back to NEXT_OPTION for short ambiguous messages.
+        UI action buttons are matched deterministically (no LLM call). Every
+        other free-text reply is classified by a small gpt-4o-mini call:
+          • HELP    (question / error / details)      → TROUBLESHOOT
+          • UNCLEAR (bare "it didn't work")            → OFFER_CHOICE
+        On any failure we default to OFFER_CHOICE — the assistant never
+        auto-advances when intent is unclear, but it also doesn't presume the
+        user wants a deep troubleshoot; it asks them which they want.
         """
-        lower = message.lower()
+        text = message.strip()
+        low = text.lower()
 
-        for kw in _RESOLVED_KEYWORDS:
-            if kw in lower:
-                return "RESOLVED"
+        # ── Deterministic fast-path for the action buttons ─────────────────────
+        if text == _ACTION_RESOLVED or low in ("issue resolved", "resolved"):
+            return "RESOLVED"
+        if text == _ACTION_NEXT or "try next fix" in low or low in ("next", "next fix", "skip"):
+            return "NEXT_OPTION"
 
-        for kw in _NEXT_KEYWORDS:
-            if kw in lower:
-                return "NEXT_OPTION"
+        # ── LLM classification for everything else ─────────────────────────────
+        current = ""
+        if session.resolution_options and session.current_index < len(session.resolution_options):
+            current = session.resolution_options[session.current_index].get("resolution_text", "")[:300]
 
-        # Longer messages with no keywords are likely clarifying questions
-        if len(message.strip()) > 40:
-            return "QUESTION"
+        try:
+            l1_model = self._app_config.get("LLM", {}).get("L1_MODEL", "synapt-dev-gpt-4o-mini")
+            reply, _ = await chat_completion(
+                messages=[
+                    {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": (
+                        f"Current fix being attempted:\n{current or 'N/A'}\n\n"
+                        f"User reply:\n{text}"
+                    )},
+                ],
+                model=l1_model,
+                temperature=0,
+                max_tokens=4,
+            )
+            label = reply.strip().upper()
+        except Exception as exc:
+            log_warning("Chat: intent classification failed, offering choice | error=%s", exc)
+            return "OFFER_CHOICE"
 
-        return "NEXT_OPTION"
+        if "RESOLVED" in label:
+            return "RESOLVED"
+        if "ADVANCE" in label:
+            return "NEXT_OPTION"
+        if "HELP" in label:
+            return "TROUBLESHOOT"
+        return "OFFER_CHOICE"
 
     # ── Feedback capture ──────────────────────────────────────────────────────
 
@@ -293,12 +342,61 @@ class ChatAgent:
             header = f"**Fix {option_index + 1} of {total}**\n\n"
             return header + resolution_text
 
-    # ── Answer a mid-session question ─────────────────────────────────────────
+    # ── Bare failure → offer a choice (no LLM call, never presumes) ───────────
 
-    async def _answer_question(
+    async def _offer_choice(
         self,
         session: ChatSession,
-        question: str,
+        session_manager: SessionManager,
+    ) -> ChatResponse:
+        """
+        The user reported failure with no error/question/detail. Don't presume:
+        acknowledge briefly and let them pick — dig in, or move on. Templated so
+        it works even when the LLM is unavailable.
+        """
+        idx = session.current_index
+        has_next = (idx + 1) < len(session.resolution_options)
+
+        if has_next:
+            tail = (
+                f"or tap **{_ACTION_NEXT}** and I'll show you the next one."
+            )
+        else:
+            tail = (
+                "or — since this was the last fix in the knowledge base — I can escalate "
+                "it to a specialist. Just let me know."
+            )
+        reply = (
+            f"Sorry, Fix {idx + 1} didn't do it. Want me to help dig into *why* it's not "
+            f"working? If so, tell me what happened — any error message or where it got "
+            f"stuck — {tail}"
+        )
+
+        session.conversation_history.append(
+            ConversationMessage(role="assistant", content=reply)
+        )
+        session_manager.save_session(session)
+
+        progress = None
+        if session.resolution_options:
+            progress = OptionProgress(
+                current=idx + 1,
+                total=len(session.resolution_options),
+            )
+
+        return ChatResponse(
+            session_id=session.session_id,
+            message=reply,
+            option_progress=progress,
+            suggested_actions=_SUGGESTED_ACTIONS,
+        )
+
+    # ── Troubleshoot the current fix (engage, do NOT advance) ─────────────────
+
+    async def _troubleshoot(
+        self,
+        session: ChatSession,
+        message: str,
         session_manager: SessionManager,
     ) -> ChatResponse:
         current_option = (
@@ -306,15 +404,21 @@ class ChatAgent:
             if session.resolution_options
             else {}
         )
+        total = len(session.resolution_options) or 1
         system_prompt = (
-            "You are a helpful IT support assistant. "
-            "Answer the user's question in the context of the incident they reported "
-            "and the fix they are currently trying. Be concise."
+            "You are an IT support assistant helping a user work through ONE specific fix, "
+            "step by step. The user is stuck, hit an error, or has a question about the fix "
+            "they are currently trying. Work the problem WITH them: briefly acknowledge what "
+            "they tried, explain what to check next or how to adapt the current step, and end "
+            "with ONE focused follow-up question to keep diagnosing together. "
+            "Do NOT tell them to give up or switch to a different fix — they can choose to move "
+            "on themselves using the 'try next fix' action. Be concise and practical; use markdown."
         )
         user_prompt = (
             f"Incident: {session.incident_description}\n\n"
-            f"Current fix being attempted:\n{current_option.get('resolution_text', 'N/A')}\n\n"
-            f"User question: {question}"
+            f"Fix they are currently trying (step {session.current_index + 1} of {total}):\n"
+            f"{current_option.get('resolution_text', 'N/A')}\n\n"
+            f"Their message: {message}"
         )
 
         try:
@@ -326,11 +430,14 @@ class ChatAgent:
                 ],
                 model=l1_model,
                 temperature=0,
-                max_tokens=400,
+                max_tokens=450,
             )
         except Exception as exc:
-            log_warning("Chat: question answering failed | error=%s", exc)
-            response = "I'm sorry, I couldn't process your question right now. Please try again."
+            log_warning("Chat: troubleshooting reply failed | error=%s", exc)
+            response = (
+                "I'm sorry, I couldn't process that just now. Can you tell me what happened "
+                "when you tried the current step — any error message or where it got stuck?"
+            )
 
         session.conversation_history.append(
             ConversationMessage(role="assistant", content=response)

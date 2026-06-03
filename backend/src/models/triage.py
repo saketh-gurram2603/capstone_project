@@ -60,3 +60,25 @@ class EscalationListResponse(BaseModel):
 
     total: int
     tickets: list[EscalationTicket]
+
+
+class ResolveTicketRequest(BaseModel):
+    """Request body for POST /escalations/{ticket_id}/resolve."""
+
+    resolution_steps: str = Field(
+        ...,
+        min_length=10,
+        max_length=5000,
+        description="Steps taken by the IT team to resolve the incident. "
+                    "This will be ingested into the knowledge base as a new incident record.",
+    )
+
+
+class ResolveTicketResponse(BaseModel):
+    """Response for POST /escalations/{ticket_id}/resolve."""
+
+    ticket_id: str
+    new_incident_id: str
+    status: str
+    ingested_to_kb: bool
+    message: str

@@ -18,6 +18,7 @@ Call init_reranker() once in the FastAPI lifespan; then call rerank() freely.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.handlers.logger import get_logger, log_info, log_warning
@@ -117,18 +118,33 @@ def rerank(query: str, candidates: list[dict]) -> list[dict]:
         raw = candidate["rerank_score"]
         if span > 1e-6:
             t = (raw - lo) / span          # t ∈ [0, 1]
-            candidate["similarity_score"] = round(0.30 + t * 0.70, 4)
+            semantic = round(0.30 + t * 0.70, 4)
         else:
-            # All candidates tied — every one is "the best in batch".
-            # Avoid the sigmoid trap (logit ≈ -6 → 0.0025 → renders as 0%)
-            # which made identical-text duplicates display as 0% similarity.
-            candidate["similarity_score"] = 1.0
+            semantic = 1.0
+
+        # ── Recency blend ─────────────────────────────────────────────────────
+        # Blend recency into the DISPLAY score only.
+        # rerank_confidence (L1 gate) stays as pure semantic sigmoid — untouched.
+        # similarity_score (display + resolution_aggregator weighting) gets a
+        # small recency boost: recent proven fixes rank slightly higher when
+        # semantic relevance is otherwise equal.
+        #   recency = exp(-days_since_resolved / 365)
+        #   1 month ago  → 0.92   (fresh)
+        #   6 months ago → 0.61   (moderate)
+        #   2 years ago  → 0.17   (older)
+        recency = _recency_score(candidate.get("payload", {}).get("resolved_at", ""))
+        candidate["recency_score"]    = recency
+        candidate["similarity_score"] = round(0.75 * semantic + 0.25 * recency, 4)
+
+    # Re-sort with blended score so recency affects the final result order
+    reranked = sorted(reranked, key=lambda c: c["similarity_score"], reverse=True)
 
     logger.debug(
-        "Reranker scored %d candidates | top_score=%.4f top_similarity=%.4f",
+        "Reranker scored %d candidates | top_score=%.4f top_similarity=%.4f top_recency=%.4f",
         len(reranked),
         reranked[0]["rerank_score"] if reranked else 0.0,
         reranked[0].get("similarity_score", 0.0) if reranked else 0.0,
+        reranked[0].get("recency_score", 0.0) if reranked else 0.0,
     )
     return reranked
 
@@ -139,6 +155,22 @@ def is_reranker_loaded() -> bool:
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
+
+def _recency_score(resolved_at_iso: str) -> float:
+    """
+    Exponential decay based on days since the incident was resolved.
+    Returns a value in (0, 1] — 1.0 for very recent, approaches 0 for old.
+    Falls back to 0.5 (neutral) when the timestamp is absent or unparseable.
+    """
+    if not resolved_at_iso:
+        return 0.5
+    try:
+        resolved = datetime.fromisoformat(resolved_at_iso.replace("Z", "+00:00"))
+        days = max(0, (datetime.now(timezone.utc) - resolved).days)
+        return round(math.exp(-days / 365.0), 4)
+    except (ValueError, TypeError):
+        return 0.5
+
 
 def _get_doc_text(candidate: dict) -> str:
     """Extract the best text field from a candidate's payload."""
